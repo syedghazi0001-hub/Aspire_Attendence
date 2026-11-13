@@ -1,11 +1,51 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { createClient } from "@supabase/supabase-js";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getPktTimeInfo } from "@/lib/pktTime";
 
-export async function GET(req: NextRequest, context: any) {
-  const { client, isConfigured } = getSupabaseAdmin(req, context);
-  if (!isConfigured || !client) {
+function createAdminClientFromCloudflare() {
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    if (env) cfEnv = env as Record<string, any>;
+  } catch {
+    // Fallback for local dev
+  }
+
+  const supabaseUrl = String(
+    cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
+      cfEnv.SUPABASE_URL ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.SUPABASE_URL ||
+      ""
+  ).trim();
+
+  const anonKey = String(
+    cfEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      cfEnv.SUPABASE_ANON_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.SUPABASE_ANON_KEY ||
+      ""
+  ).trim();
+
+  const serviceRoleKey = String(
+    cfEnv.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      ""
+  ).trim();
+
+  const activeKey = serviceRoleKey || anonKey;
+  if (!supabaseUrl || !activeKey) return null;
+
+  return createClient(supabaseUrl, activeKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+export async function GET(req: NextRequest, _context: any) {
+  const client = createAdminClientFromCloudflare();
+  if (!client) {
     return NextResponse.json(
       {
         valid: false,
@@ -118,7 +158,8 @@ export async function GET(req: NextRequest, context: any) {
           active: false,
           blocked_other_device: true,
           approval_status: "blocked_other_device",
-          error: "Already logged in on another device. Please contact Admin.",
+          error:
+            "Active session detected on another device. A request has been sent to the Admin for approval. Please wait.",
         },
         { status: 403 }
       );
@@ -135,28 +176,61 @@ export async function GET(req: NextRequest, context: any) {
     });
   }
 
-  if (userRow.device_id && fp && userRow.device_id !== fp) {
-    return NextResponse.json(
-      {
-        valid: false,
-        active: false,
-        blocked_other_device: true,
-        approval_status: "blocked_other_device",
-        error: "Already logged in on another device. Please contact Admin.",
-      },
-      { status: 403 }
-    );
-  }
+  if (fp) {
+    const { data: activeForFp } = await client
+      .from("active_sessions")
+      .select("*")
+      .eq("user_id", userRow.id)
+      .eq("device_fingerprint", fp)
+      .eq("is_active", true)
+      .maybeSingle();
 
-  if (userRow.device_id && (!fp || userRow.device_id === fp)) {
-    return NextResponse.json({
-      valid: true,
-      active: true,
-      approval_status: "approved",
-      employee: userRow,
-      today_attendance: todayAttendance,
-      server_pkt: pktNow,
-    });
+    if (activeForFp) {
+      const status = String(activeForFp.approval_status || "approved");
+      return NextResponse.json({
+        valid: true,
+        active: status === "approved" || status === "pending_logout",
+        approval_status: status,
+        session_token: activeForFp.session_token,
+        employee: userRow,
+        today_attendance: todayAttendance,
+        server_pkt: pktNow,
+      });
+    }
+
+    const { data: latestReq } = await client
+      .from("session_requests")
+      .select("*")
+      .eq("user_id", userRow.id)
+      .eq("device_id", fp)
+      .eq("request_type", "login")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (latestReq?.status === "pending") {
+      return NextResponse.json({
+        valid: true,
+        active: false,
+        approval_status: "pending_login",
+        employee: userRow,
+        today_attendance: todayAttendance,
+        server_pkt: pktNow,
+      });
+    }
+
+    if (latestReq?.status === "rejected") {
+      return NextResponse.json(
+        {
+          valid: false,
+          active: false,
+          rejected_by_admin: true,
+          approval_status: "rejected",
+          error: "Your login request on this device was rejected by the Admin.",
+        },
+        { status: 403 }
+      );
+    }
   }
 
   return NextResponse.json(
@@ -170,9 +244,9 @@ export async function GET(req: NextRequest, context: any) {
   );
 }
 
-export async function POST(req: NextRequest, context: any) {
-  const { client, isConfigured } = getSupabaseAdmin(req, context);
-  if (!isConfigured || !client) {
+export async function POST(req: NextRequest, _context: any) {
+  const client = createAdminClientFromCloudflare();
+  if (!client) {
     return NextResponse.json(
       { error: "Supabase is not configured." },
       { status: 503 }
@@ -187,7 +261,7 @@ export async function POST(req: NextRequest, context: any) {
       body.device_id ||
       ""
     ).trim();
-    const deviceInfo = (body.device_info || "Browser Session").slice(0, 180);
+    const deviceInfo = (body.device_info || "Web Browser").slice(0, 120);
     let userId = body.user_id || "";
 
     if (sessionToken) {

@@ -388,9 +388,6 @@ export default function EmployeeListPage() {
                           <div className="font-bold text-slate-800 dark:text-white">
                             {emp.full_name}
                           </div>
-                          <div className="text-xs font-mono font-bold text-indigo-700 dark:text-indigo-300">
-                            {emp.employee_id}
-                          </div>
                         </td>
                         <td className="py-3.5 px-4 text-xs font-mono font-semibold text-slate-700 dark:text-slate-200">
                           {formatTime24to12(emp.duty_start_time || "09:00")} -{" "}

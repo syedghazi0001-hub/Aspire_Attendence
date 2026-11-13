@@ -1,6 +1,6 @@
 -- =================================================================================
--- PULSEHR CLOUD v5.0: NON-DESTRUCTIVE SUPABASE SCHEMA & AUTH TRIGGER ARCHITECTURE
--- Safe to run multiple times in the Supabase SQL Editor without losing existing data.
+-- PULSEHR CLOUD v5.1: NON-DESTRUCTIVE SUPABASE SCHEMA & AUTH TRIGGER ARCHITECTURE
+-- Run this entire script in the Supabase SQL Editor. Safe to re-run at any time.
 -- =================================================================================
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -65,13 +65,12 @@ CREATE INDEX IF NOT EXISTS idx_users_role ON public.users (role);
 
 -- =================================================================================
 -- 2. CRITICAL POSTGRES TRIGGER: public.handle_new_user() ON auth.users
--- Automatically inserts newly created Auth users into public.users WITHOUT FK errors.
+-- Uses SECURITY DEFINER SET search_path = public so RLS never blocks insertion.
 -- =================================================================================
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
+SECURITY DEFINER SET search_path = public
 AS $$
 DECLARE
     v_full_name TEXT;
@@ -84,7 +83,6 @@ DECLARE
     v_duty_start TIME;
     v_duty_end TIME;
 BEGIN
-    -- Extract metadata passed via supabase.auth.admin.createUser({ user_metadata: {...} })
     v_full_name := COALESCE(
         NULLIF(TRIM(NEW.raw_user_meta_data->>'full_name'), ''),
         SPLIT_PART(COALESCE(NEW.email, 'User'), '@', 1)
@@ -177,10 +175,11 @@ BEGIN
 
     RETURN NEW;
 EXCEPTION WHEN OTHERS THEN
-    -- Never block auth.users creation even if metadata has unexpected formatting
     RETURN NEW;
 END;
 $$;
+
+ALTER FUNCTION public.handle_new_user() OWNER TO postgres;
 
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
@@ -189,8 +188,170 @@ FOR EACH ROW
 EXECUTE FUNCTION public.handle_new_user();
 
 -- =================================================================================
+-- 2B. ATOMIC RPC FALLBACK: public.admin_create_employee()
+-- Allows creating & confirming an employee in auth.users + public.users atomically.
+-- =================================================================================
+CREATE OR REPLACE FUNCTION public.admin_create_employee(
+    p_email TEXT,
+    p_password TEXT,
+    p_employee_id TEXT,
+    p_full_name TEXT,
+    p_basic_salary NUMERIC DEFAULT 0,
+    p_per_day_deduction NUMERIC DEFAULT 0,
+    p_hourly_rate NUMERIC DEFAULT 0,
+    p_overtime_rate NUMERIC DEFAULT 0,
+    p_duty_start_time TIME DEFAULT '09:00:00',
+    p_duty_end_time TIME DEFAULT '17:00:00',
+    p_existing_auth_id UUID DEFAULT NULL
+)
+RETURNS public.users
+LANGUAGE plpgsql
+SECURITY DEFINER SET search_path = public, auth, extensions
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_encrypted_pw TEXT;
+    v_result public.users;
+BEGIN
+    IF p_existing_auth_id IS NOT NULL AND EXISTS (SELECT 1 FROM auth.users WHERE id = p_existing_auth_id) THEN
+        v_user_id := p_existing_auth_id;
+    ELSE
+        SELECT id INTO v_user_id
+        FROM auth.users
+        WHERE LOWER(email) = LOWER(TRIM(p_email))
+        LIMIT 1;
+    END IF;
+
+    v_encrypted_pw := crypt(p_password, gen_salt('bf'));
+
+    IF v_user_id IS NULL THEN
+        v_user_id := gen_random_uuid();
+
+        INSERT INTO auth.users (
+            instance_id,
+            id,
+            aud,
+            role,
+            email,
+            encrypted_password,
+            email_confirmed_at,
+            raw_app_meta_data,
+            raw_user_meta_data,
+            created_at,
+            updated_at,
+            confirmation_token,
+            email_change,
+            email_change_token_new,
+            recovery_token
+        ) VALUES (
+            '00000000-0000-0000-0000-000000000000',
+            v_user_id,
+            'authenticated',
+            'authenticated',
+            LOWER(TRIM(p_email)),
+            v_encrypted_pw,
+            NOW(),
+            '{"provider":"email","providers":["email"]}'::jsonb,
+            jsonb_build_object(
+                'full_name', TRIM(p_full_name),
+                'employee_id', UPPER(TRIM(p_employee_id)),
+                'role', 'employee',
+                'monthly_salary', COALESCE(p_basic_salary, 0),
+                'per_day_deduction', COALESCE(p_per_day_deduction, 0),
+                'hourly_rate', COALESCE(p_hourly_rate, 0),
+                'overtime_rate', COALESCE(p_overtime_rate, 0),
+                'duty_start_time', p_duty_start_time::TEXT,
+                'duty_end_time', p_duty_end_time::TEXT
+            ),
+            NOW(),
+            NOW(),
+            '',
+            '',
+            '',
+            ''
+        );
+
+        INSERT INTO auth.identities (
+            id,
+            user_id,
+            provider_id,
+            identity_data,
+            provider,
+            last_sign_in_at,
+            created_at,
+            updated_at
+        ) VALUES (
+            gen_random_uuid(),
+            v_user_id,
+            v_user_id::text,
+            jsonb_build_object(
+                'sub', v_user_id::text,
+                'email', LOWER(TRIM(p_email)),
+                'email_verified', true,
+                'phone_verified', false
+            ),
+            'email',
+            NOW(),
+            NOW(),
+            NOW()
+        ) ON CONFLICT DO NOTHING;
+    ELSE
+        UPDATE auth.users
+        SET encrypted_password = v_encrypted_pw,
+            email_confirmed_at = COALESCE(email_confirmed_at, NOW()),
+            updated_at = NOW()
+        WHERE id = v_user_id;
+    END IF;
+
+    INSERT INTO public.users (
+        id,
+        employee_id,
+        full_name,
+        role,
+        device_id,
+        basic_salary,
+        monthly_salary,
+        per_day_deduction,
+        hourly_rate,
+        overtime_rate,
+        duty_start_time,
+        duty_end_time
+    ) VALUES (
+        v_user_id,
+        UPPER(TRIM(p_employee_id)),
+        TRIM(p_full_name),
+        'employee',
+        NULL,
+        COALESCE(p_basic_salary, 0),
+        COALESCE(p_basic_salary, 0),
+        COALESCE(p_per_day_deduction, 0),
+        COALESCE(p_hourly_rate, 0),
+        COALESCE(p_overtime_rate, 0),
+        p_duty_start_time,
+        p_duty_end_time
+    )
+    ON CONFLICT (id) DO UPDATE SET
+        employee_id = EXCLUDED.employee_id,
+        full_name = EXCLUDED.full_name,
+        role = 'employee',
+        basic_salary = EXCLUDED.basic_salary,
+        monthly_salary = EXCLUDED.monthly_salary,
+        per_day_deduction = EXCLUDED.per_day_deduction,
+        hourly_rate = EXCLUDED.hourly_rate,
+        overtime_rate = EXCLUDED.overtime_rate,
+        duty_start_time = EXCLUDED.duty_start_time,
+        duty_end_time = EXCLUDED.duty_end_time
+    RETURNING * INTO v_result;
+
+    RETURN v_result;
+END;
+$$;
+
+ALTER FUNCTION public.admin_create_employee(TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TIME, TIME, UUID) OWNER TO postgres;
+GRANT EXECUTE ON FUNCTION public.admin_create_employee(TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TIME, TIME, UUID) TO anon, authenticated, service_role;
+
+-- =================================================================================
 -- 3. TABLE: public.attendance
--- Fields: user_id, date, clock_in, clock_out, status, overtime_hours, missed_hours
 -- =================================================================================
 CREATE TABLE IF NOT EXISTS public.attendance (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -218,7 +379,6 @@ ALTER TABLE public.attendance ADD COLUMN IF NOT EXISTS overtime_minutes NUMERIC(
 ALTER TABLE public.attendance ADD COLUMN IF NOT EXISTS missed_hours NUMERIC(8, 2) NOT NULL DEFAULT 0;
 ALTER TABLE public.attendance ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
--- Keep clock_in/clock_out and login_time/logout_time automatically synchronized
 CREATE OR REPLACE FUNCTION public.sync_attendance_timestamps()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -251,7 +411,6 @@ CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON public.attendance (user_i
 
 -- =================================================================================
 -- 4. TABLE: public.leaves
--- Fields: user_id, date, leave_type (paid/unpaid/short), hours_missed, status (pending/approved/rejected)
 -- =================================================================================
 CREATE TABLE IF NOT EXISTS public.leaves (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -277,14 +436,13 @@ CREATE INDEX IF NOT EXISTS idx_leaves_user_date ON public.leaves (user_id, date)
 CREATE INDEX IF NOT EXISTS idx_leaves_date ON public.leaves (date);
 
 -- =================================================================================
--- 5. TABLE: public.active_sessions
--- Fields: user_id, device_fingerprint, is_active, approval_status (pending_login, approved, pending_logout, rejected)
+-- 5. TABLE: public.active_sessions & public.session_requests
 -- =================================================================================
 CREATE TABLE IF NOT EXISTS public.active_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     device_fingerprint TEXT NOT NULL,
-    device_info TEXT DEFAULT 'Browser Session',
+    device_info TEXT DEFAULT 'Web Browser',
     session_token TEXT UNIQUE NOT NULL DEFAULT encode(gen_random_bytes(24), 'hex'),
     is_active BOOLEAN NOT NULL DEFAULT true,
     approval_status TEXT NOT NULL DEFAULT 'pending_login' CHECK (approval_status IN ('pending_login', 'approved', 'pending_logout', 'rejected')),
@@ -294,7 +452,7 @@ CREATE TABLE IF NOT EXISTS public.active_sessions (
 
 ALTER TABLE public.active_sessions ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE public.active_sessions ADD COLUMN IF NOT EXISTS device_fingerprint TEXT;
-ALTER TABLE public.active_sessions ADD COLUMN IF NOT EXISTS device_info TEXT DEFAULT 'Browser Session';
+ALTER TABLE public.active_sessions ADD COLUMN IF NOT EXISTS device_info TEXT DEFAULT 'Web Browser';
 ALTER TABLE public.active_sessions ADD COLUMN IF NOT EXISTS session_token TEXT;
 ALTER TABLE public.active_sessions ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE public.active_sessions ADD COLUMN IF NOT EXISTS approval_status TEXT NOT NULL DEFAULT 'pending_login';
@@ -305,20 +463,18 @@ CREATE INDEX IF NOT EXISTS idx_active_sessions_user_id ON public.active_sessions
 CREATE INDEX IF NOT EXISTS idx_active_sessions_token ON public.active_sessions (session_token);
 CREATE INDEX IF NOT EXISTS idx_active_sessions_status ON public.active_sessions (approval_status);
 
--- Audit table for login/logout requests (kept in sync with active_sessions)
 CREATE TABLE IF NOT EXISTS public.session_requests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     request_type TEXT NOT NULL CHECK (request_type IN ('login', 'logout')),
     device_id TEXT NOT NULL,
-    device_info TEXT DEFAULT 'Browser Session',
+    device_info TEXT DEFAULT 'Web Browser',
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- =================================================================================
 -- 6. TABLE: public.settings
--- Stores workplace GPS geofence & QR signature secret
 -- =================================================================================
 CREATE TABLE IF NOT EXISTS public.settings (
     id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
@@ -335,7 +491,6 @@ ON CONFLICT (id) DO NOTHING;
 
 -- =================================================================================
 -- 7. ROW LEVEL SECURITY (RLS) POLICIES & PERMISSIONS
--- Grants full SELECT, INSERT, UPDATE, DELETE access for Admin & Server API operations
 -- =================================================================================
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.attendance ENABLE ROW LEVEL SECURITY;
@@ -347,47 +502,47 @@ ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "full_access_users" ON public.users;
 CREATE POLICY "full_access_users"
 ON public.users FOR ALL
-TO anon, authenticated, service_role
+TO postgres, anon, authenticated, service_role, supabase_auth_admin
 USING (true)
 WITH CHECK (true);
 
 DROP POLICY IF EXISTS "full_access_attendance" ON public.attendance;
 CREATE POLICY "full_access_attendance"
 ON public.attendance FOR ALL
-TO anon, authenticated, service_role
+TO postgres, anon, authenticated, service_role
 USING (true)
 WITH CHECK (true);
 
 DROP POLICY IF EXISTS "full_access_leaves" ON public.leaves;
 CREATE POLICY "full_access_leaves"
 ON public.leaves FOR ALL
-TO anon, authenticated, service_role
+TO postgres, anon, authenticated, service_role
 USING (true)
 WITH CHECK (true);
 
 DROP POLICY IF EXISTS "full_access_active_sessions" ON public.active_sessions;
 CREATE POLICY "full_access_active_sessions"
 ON public.active_sessions FOR ALL
-TO anon, authenticated, service_role
+TO postgres, anon, authenticated, service_role
 USING (true)
 WITH CHECK (true);
 
 DROP POLICY IF EXISTS "full_access_session_requests" ON public.session_requests;
 CREATE POLICY "full_access_session_requests"
 ON public.session_requests FOR ALL
-TO anon, authenticated, service_role
+TO postgres, anon, authenticated, service_role
 USING (true)
 WITH CHECK (true);
 
 DROP POLICY IF EXISTS "full_access_settings" ON public.settings;
 CREATE POLICY "full_access_settings"
 ON public.settings FOR ALL
-TO anon, authenticated, service_role
+TO postgres, anon, authenticated, service_role
 USING (true)
 WITH CHECK (true);
 
-GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role, supabase_auth_admin;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO postgres, anon, authenticated, service_role, supabase_auth_admin;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role, supabase_auth_admin;
 
 NOTIFY pgrst, 'reload schema';

@@ -7,6 +7,7 @@ import { Download, QrCode, RefreshCw } from "lucide-react";
 export interface QrGeneratorCardProps {
   defaultUrl?: string;
   qrString?: string;
+  qrSecret?: string;
   labLat?: number;
   labLng?: number;
   radiusMeters?: number;
@@ -15,6 +16,7 @@ export interface QrGeneratorCardProps {
 export default function QrGeneratorCard({
   defaultUrl,
   qrString,
+  qrSecret,
 }: QrGeneratorCardProps) {
   const [portalUrl, setPortalUrl] = useState<string>("");
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
@@ -25,10 +27,10 @@ export default function QrGeneratorCard({
       typeof window !== "undefined"
         ? window.location.origin
         : "http://localhost:3000";
-    const initialUrl = defaultUrl || qrString || `${origin}/employee`;
+    const initialUrl = defaultUrl || qrString || qrSecret || `${origin}/employee`;
     setPortalUrl(initialUrl);
     generateQrCode(initialUrl);
-  }, [defaultUrl, qrString]);
+  }, [defaultUrl, qrString, qrSecret]);
 
   const generateQrCode = async (targetUrl: string) => {
     if (!targetUrl.trim()) return;

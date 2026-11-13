@@ -13,47 +13,50 @@ export interface RuntimeEnv {
 }
 
 /**
- * Resolves environment variables on Cloudflare Workers (OpenNext `getCloudflareContext().env`
- * or route `context.env`) with seamless fallback to `process.env` for local development.
+ * Retrieves `getCloudflareContext().env` on Cloudflare Workers
+ * and falls back to `process.env` during local development/build.
  */
 export function resolveRuntimeEnv(routeContext?: any): RuntimeEnv {
   let cfEnv: RuntimeEnv = {};
   try {
-    const cfContext = getCloudflareContext();
-    if (cfContext?.env) {
-      cfEnv = cfContext.env as unknown as RuntimeEnv;
+    const { env } = getCloudflareContext();
+    if (env) {
+      cfEnv = env as unknown as RuntimeEnv;
     }
   } catch {
-    // Not running inside OpenNext Cloudflare Worker request context (e.g., standard `next dev` / build)
+    // Fallback when called outside an active Cloudflare Worker request context
   }
 
   const passedEnv: RuntimeEnv = routeContext?.env || {};
 
   return {
     NEXT_PUBLIC_SUPABASE_URL:
-      (passedEnv.NEXT_PUBLIC_SUPABASE_URL as string) ||
       (cfEnv.NEXT_PUBLIC_SUPABASE_URL as string) ||
-      (passedEnv.SUPABASE_URL as string) ||
       (cfEnv.SUPABASE_URL as string) ||
+      (passedEnv.NEXT_PUBLIC_SUPABASE_URL as string) ||
+      (passedEnv.SUPABASE_URL as string) ||
       process.env.NEXT_PUBLIC_SUPABASE_URL ||
       process.env.SUPABASE_URL ||
       "",
     NEXT_PUBLIC_SUPABASE_ANON_KEY:
-      (passedEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY as string) ||
       (cfEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY as string) ||
-      (passedEnv.SUPABASE_ANON_KEY as string) ||
       (cfEnv.SUPABASE_ANON_KEY as string) ||
+      (passedEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY as string) ||
+      (passedEnv.SUPABASE_ANON_KEY as string) ||
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
       process.env.SUPABASE_ANON_KEY ||
       "",
     SUPABASE_SERVICE_ROLE_KEY:
-      (passedEnv.SUPABASE_SERVICE_ROLE_KEY as string) ||
       (cfEnv.SUPABASE_SERVICE_ROLE_KEY as string) ||
+      (passedEnv.SUPABASE_SERVICE_ROLE_KEY as string) ||
       process.env.SUPABASE_SERVICE_ROLE_KEY ||
       "",
   };
 }
 
+/**
+ * Creates a fresh Supabase Admin client per request using `getCloudflareContext().env`.
+ */
 export function getSupabaseAdmin(req?: NextRequest, routeContext?: any) {
   const env = resolveRuntimeEnv(routeContext);
 
@@ -93,7 +96,7 @@ export function getSupabaseAdmin(req?: NextRequest, routeContext?: any) {
 
   const authHeader = req?.headers.get("authorization") || "";
 
-  // Main client: uses service_role key if available; otherwise uses anonKey + Admin's Bearer token
+  // New Supabase Admin client created per request
   const client = createClient(supabaseUrl, activeKey, {
     auth: {
       autoRefreshToken: false,
@@ -104,7 +107,7 @@ export function getSupabaseAdmin(req?: NextRequest, routeContext?: any) {
       : {}),
   });
 
-  // Dedicated anon client for standard Auth signIn / signUp fallbacks
+  // New Supabase Anon client created per request
   const anonClient = createClient(supabaseUrl, anonKey || activeKey, {
     auth: {
       autoRefreshToken: false,

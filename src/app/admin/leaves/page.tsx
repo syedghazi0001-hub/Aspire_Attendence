@@ -265,7 +265,7 @@ export default function AdminLeavesPage() {
                 ) : (
                   employees.map((emp) => (
                     <option key={emp.id} value={emp.id}>
-                      {emp.full_name} ({emp.employee_id})
+                      {emp.full_name}
                     </option>
                   ))
                 )}
@@ -420,9 +420,6 @@ export default function AdminLeavesPage() {
                         <td className="py-3.5 px-5">
                           <div className="font-bold text-slate-800 dark:text-white">
                             {lv.users?.full_name || "Employee"}
-                          </div>
-                          <div className="text-xs font-mono font-bold text-indigo-700 dark:text-indigo-300">
-                            {lv.users?.employee_id || "—"}
                           </div>
                         </td>
                         <td className="py-3.5 px-5">

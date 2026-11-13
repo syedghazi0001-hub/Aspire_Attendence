@@ -1,10 +1,54 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { createClient } from "@supabase/supabase-js";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 
-export async function GET(req: NextRequest, context: any) {
-  const { client, isConfigured } = getSupabaseAdmin(req, context);
-  if (!isConfigured || !client) {
+function createAdminClientFromCloudflare(req: NextRequest) {
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    if (env) cfEnv = env as Record<string, any>;
+  } catch {
+    // Fallback for local dev
+  }
+
+  const supabaseUrl = String(
+    cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
+      cfEnv.SUPABASE_URL ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.SUPABASE_URL ||
+      ""
+  ).trim();
+
+  const anonKey = String(
+    cfEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      cfEnv.SUPABASE_ANON_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.SUPABASE_ANON_KEY ||
+      ""
+  ).trim();
+
+  const serviceRoleKey = String(
+    cfEnv.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      ""
+  ).trim();
+
+  const activeKey = serviceRoleKey || anonKey;
+  if (!supabaseUrl || !activeKey) return null;
+
+  const authHeader = req.headers.get("authorization") || "";
+  return createClient(supabaseUrl, activeKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    ...(!serviceRoleKey && authHeader
+      ? { global: { headers: { Authorization: authHeader } } }
+      : {}),
+  });
+}
+
+export async function GET(req: NextRequest, _context: any) {
+  const client = createAdminClientFromCloudflare(req);
+  if (!client) {
     return NextResponse.json({ leaves: [] });
   }
 
@@ -54,9 +98,9 @@ export async function GET(req: NextRequest, context: any) {
   }
 }
 
-export async function POST(req: NextRequest, context: any) {
-  const { client, isConfigured } = getSupabaseAdmin(req, context);
-  if (!isConfigured || !client) {
+export async function POST(req: NextRequest, _context: any) {
+  const client = createAdminClientFromCloudflare(req);
+  if (!client) {
     return NextResponse.json(
       { error: "Supabase is not configured." },
       { status: 503 }
@@ -131,9 +175,9 @@ export async function POST(req: NextRequest, context: any) {
   }
 }
 
-export async function PUT(req: NextRequest, context: any) {
-  const { client, isConfigured } = getSupabaseAdmin(req, context);
-  if (!isConfigured || !client) {
+export async function PUT(req: NextRequest, _context: any) {
+  const client = createAdminClientFromCloudflare(req);
+  if (!client) {
     return NextResponse.json(
       { error: "Supabase is not configured." },
       { status: 503 }
@@ -180,9 +224,9 @@ export async function PUT(req: NextRequest, context: any) {
   }
 }
 
-export async function DELETE(req: NextRequest, context: any) {
-  const { client, isConfigured } = getSupabaseAdmin(req, context);
-  if (!isConfigured || !client) {
+export async function DELETE(req: NextRequest, _context: any) {
+  const client = createAdminClientFromCloudflare(req);
+  if (!client) {
     return NextResponse.json(
       { error: "Supabase is not configured." },
       { status: 503 }

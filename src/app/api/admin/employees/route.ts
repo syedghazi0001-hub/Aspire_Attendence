@@ -2,61 +2,98 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
-import { getSupabaseAdmin, RuntimeEnv } from "@/lib/supabaseAdmin";
 import { employeeIdToAuthEmail } from "@/lib/geo";
 import { calculateShiftDurationHours } from "@/lib/pktTime";
 
-function resolveCloudflareOrProcessEnv(context: any): RuntimeEnv {
-  let cfEnv: RuntimeEnv = {};
+function createPerRequestSupabaseAdmin(req: NextRequest) {
+  let cfEnv: Record<string, any> = {};
   try {
-    const cfContext = getCloudflareContext();
-    if (cfContext?.env) {
-      cfEnv = cfContext.env as unknown as RuntimeEnv;
+    const { env } = getCloudflareContext();
+    if (env) {
+      cfEnv = env as Record<string, any>;
     }
   } catch {
-    // Fallback when running locally outside Cloudflare Workers runtime
+    // Local dev fallback if outside Cloudflare context
   }
 
-  return {
-    NEXT_PUBLIC_SUPABASE_URL:
-      (context?.env?.NEXT_PUBLIC_SUPABASE_URL as string) ||
-      (cfEnv.NEXT_PUBLIC_SUPABASE_URL as string) ||
-      (context?.env?.SUPABASE_URL as string) ||
-      (cfEnv.SUPABASE_URL as string) ||
+  const supabaseUrl = String(
+    cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
+      cfEnv.SUPABASE_URL ||
       process.env.NEXT_PUBLIC_SUPABASE_URL ||
       process.env.SUPABASE_URL ||
-      "",
-    NEXT_PUBLIC_SUPABASE_ANON_KEY:
-      (context?.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY as string) ||
-      (cfEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY as string) ||
-      (context?.env?.SUPABASE_ANON_KEY as string) ||
-      (cfEnv.SUPABASE_ANON_KEY as string) ||
+      ""
+  ).trim();
+
+  const anonKey = String(
+    cfEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      cfEnv.SUPABASE_ANON_KEY ||
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
       process.env.SUPABASE_ANON_KEY ||
-      "",
-    SUPABASE_SERVICE_ROLE_KEY:
-      (context?.env?.SUPABASE_SERVICE_ROLE_KEY as string) ||
-      (cfEnv.SUPABASE_SERVICE_ROLE_KEY as string) ||
+      ""
+  ).trim();
+
+  const serviceRoleKey = String(
+    cfEnv.SUPABASE_SERVICE_ROLE_KEY ||
       process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      "",
+      ""
+  ).trim();
+
+  const hasServiceRole = Boolean(
+    serviceRoleKey &&
+      !serviceRoleKey.includes("your-service-role-secret-key-here") &&
+      serviceRoleKey !== anonKey
+  );
+
+  const activeKey = hasServiceRole ? serviceRoleKey : anonKey;
+  if (!supabaseUrl || !activeKey) {
+    return {
+      supabaseAdmin: null,
+      anonClient: null,
+      hasServiceRole: false,
+    };
+  }
+
+  const authHeader = req.headers.get("authorization") || "";
+
+  const supabaseAdmin = createClient(supabaseUrl, activeKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+    ...(!hasServiceRole && authHeader
+      ? { global: { headers: { Authorization: authHeader } } }
+      : {}),
+  });
+
+  const anonClient = createClient(supabaseUrl, anonKey || activeKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
+
+  return {
+    supabaseAdmin,
+    anonClient,
+    hasServiceRole,
   };
 }
 
-export async function GET(req: NextRequest, context: any) {
+export async function GET(req: NextRequest, _context: any) {
   try {
-    const { client, isConfigured } = getSupabaseAdmin(req, context);
-    if (!isConfigured || !client) {
+    const { supabaseAdmin } = createPerRequestSupabaseAdmin(req);
+    if (!supabaseAdmin) {
       return NextResponse.json(
         {
           error:
-            "Supabase is not configured. Please verify NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY.",
+            "Supabase is not configured in Cloudflare Worker environment.",
           employees: [],
         },
         { status: 503 }
       );
     }
 
-    const { data, error } = await client
+    const { data, error } = await supabaseAdmin
       .from("users")
       .select("*")
       .eq("role", "employee")
@@ -79,35 +116,21 @@ export async function GET(req: NextRequest, context: any) {
   }
 }
 
-export async function POST(req: NextRequest, context: any) {
+export async function POST(req: NextRequest, _context: any) {
   try {
-    // 1. Fetch environment keys from Cloudflare `context.env` / `getCloudflareContext().env` or `process.env`
-    const env = resolveCloudflareOrProcessEnv(context);
-    const supabaseUrl = (env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
-    const serviceRoleKey = (
-      context?.env?.SUPABASE_SERVICE_ROLE_KEY ||
-      env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      ""
-    ).trim();
+    // 1. Get Cloudflare Worker environment via getCloudflareContext() & create per-request client
+    const { supabaseAdmin, anonClient, hasServiceRole } =
+      createPerRequestSupabaseAdmin(req);
 
-    if (!supabaseUrl || !serviceRoleKey) {
+    if (!supabaseAdmin || !anonClient) {
       return NextResponse.json(
         {
           error:
-            "Missing SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_URL in Cloudflare Worker environment (context.env) or process.env.",
+            "Supabase credentials are missing in Cloudflare Worker environment (getCloudflareContext().env).",
         },
         { status: 503 }
       );
     }
-
-    // 2. Create the Supabase Admin client with SUPABASE_SERVICE_ROLE_KEY
-    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-    });
 
     const body = await req.json();
     const fullName = (body.full_name || "").trim();
@@ -194,50 +217,111 @@ export async function POST(req: NextRequest, context: any) {
       duty_end_time: dutyEndTime,
     };
 
-    // 3. Call supabaseAdmin.auth.admin.createUser({ email, password, email_confirm: true, user_metadata })
-    // The Postgres trigger `on_auth_user_created` (`public.handle_new_user`) automatically inserts into `public.users`.
     let authUserId: string | null = null;
-    const { data: createdAuth, error: createAuthError } =
-      await supabaseAdmin.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true,
-        user_metadata: userMetadata,
-      });
 
-    if (!createAuthError && createdAuth?.user) {
-      authUserId = createdAuth.user.id;
-    } else if (createAuthError) {
-      const { data: listData } = await supabaseAdmin.auth.admin.listUsers();
-      const existingAuthUser = listData?.users?.find(
-        (u) => u.email?.toLowerCase() === email.toLowerCase()
-      );
-
-      if (existingAuthUser) {
-        await supabaseAdmin.auth.admin.updateUserById(existingAuthUser.id, {
+    // 2. Primary Path: Use SUPABASE_SERVICE_ROLE_KEY via supabaseAdmin.auth.admin.createUser
+    if (hasServiceRole) {
+      const { data: createdAuth, error: createAuthError } =
+        await supabaseAdmin.auth.admin.createUser({
+          email,
           password,
           email_confirm: true,
           user_metadata: userMetadata,
         });
-        authUserId = existingAuthUser.id;
-      } else {
-        return NextResponse.json(
-          {
-            error: `Supabase Auth Admin Error: ${createAuthError.message}`,
-          },
-          { status: 400 }
+
+      if (!createAuthError && createdAuth?.user) {
+        authUserId = createdAuth.user.id;
+      } else if (createAuthError) {
+        const { data: listData } = await supabaseAdmin.auth.admin.listUsers();
+        const existingAuthUser = listData?.users?.find(
+          (u) => u.email?.toLowerCase() === email.toLowerCase()
         );
+
+        if (existingAuthUser) {
+          await supabaseAdmin.auth.admin.updateUserById(existingAuthUser.id, {
+            password,
+            email_confirm: true,
+            user_metadata: userMetadata,
+          });
+          authUserId = existingAuthUser.id;
+        } else {
+          return NextResponse.json(
+            {
+              error: `Supabase Auth Admin Error: ${createAuthError.message}`,
+            },
+            { status: 400 }
+          );
+        }
+      }
+    } else {
+      // 3. Fallback Path if SUPABASE_SERVICE_ROLE_KEY was not bound in Cloudflare Worker secrets:
+      // Try atomic SECURITY DEFINER RPC `admin_create_employee` first, then `auth.signUp` (which fires `handle_new_user` trigger)
+      const normalizedStart =
+        dutyStartTime.length === 5 ? `${dutyStartTime}:00` : dutyStartTime;
+      const normalizedEnd =
+        dutyEndTime.length === 5 ? `${dutyEndTime}:00` : dutyEndTime;
+
+      const { data: rpcEmployee, error: rpcError } = await supabaseAdmin.rpc(
+        "admin_create_employee",
+        {
+          p_email: email,
+          p_password: password,
+          p_employee_id: employeeId,
+          p_full_name: fullName,
+          p_basic_salary: monthlySalary,
+          p_per_day_deduction: perDayDeduction,
+          p_hourly_rate: hourlyRate,
+          p_overtime_rate: overtimeRate,
+          p_duty_start_time: normalizedStart,
+          p_duty_end_time: normalizedEnd,
+          p_existing_auth_id: null,
+        }
+      );
+
+      if (!rpcError && rpcEmployee) {
+        return NextResponse.json({
+          message: `Employee '${fullName}' (${employeeId}) created and auto-confirmed!`,
+          employee: rpcEmployee,
+        });
+      }
+
+      const { data: signUpData, error: signUpErr } =
+        await anonClient.auth.signUp({
+          email,
+          password,
+          options: { data: userMetadata },
+        });
+
+      const hasRealIdentity =
+        signUpData?.user &&
+        (!Array.isArray(signUpData.user.identities) ||
+          signUpData.user.identities.length > 0);
+
+      if (!signUpErr && signUpData?.user && hasRealIdentity) {
+        authUserId = signUpData.user.id;
+      } else {
+        const { data: signInData } =
+          await anonClient.auth.signInWithPassword({
+            email,
+            password,
+          });
+        if (signInData?.user) {
+          authUserId = signInData.user.id;
+        }
       }
     }
 
     if (!authUserId) {
       return NextResponse.json(
-        { error: "Failed to obtain Auth User ID from Supabase." },
+        {
+          error:
+            "Failed to create Auth user. Please add SUPABASE_SERVICE_ROLE_KEY in Cloudflare Worker Variables and Secrets (or run supabase/schema.sql in Supabase SQL Editor).",
+        },
         { status: 500 }
       );
     }
 
-    // 4. Confirm/synchronize row in `public.users` (already inserted by `handle_new_user` trigger)
+    // 4. Confirm/synchronize row in `public.users` (inserted by `handle_new_user` trigger)
     const { data: userRecord, error: upsertError } = await supabaseAdmin
       .from("users")
       .upsert(
@@ -282,13 +366,10 @@ export async function POST(req: NextRequest, context: any) {
   }
 }
 
-export async function PUT(req: NextRequest, context: any) {
+export async function PUT(req: NextRequest, _context: any) {
   try {
-    const { client, isConfigured, hasServiceRole } = getSupabaseAdmin(
-      req,
-      context
-    );
-    if (!isConfigured || !client) {
+    const { supabaseAdmin, hasServiceRole } = createPerRequestSupabaseAdmin(req);
+    if (!supabaseAdmin) {
       return NextResponse.json(
         { error: "Supabase credentials missing." },
         { status: 503 }
@@ -309,7 +390,7 @@ export async function PUT(req: NextRequest, context: any) {
 
     let employeeId = (body.employee_id || "").trim().toUpperCase();
     if (!employeeId) {
-      const { data: existingEmp } = await client
+      const { data: existingEmp } = await supabaseAdmin
         .from("users")
         .select("employee_id")
         .eq("id", id)
@@ -372,7 +453,7 @@ export async function PUT(req: NextRequest, context: any) {
         updatePayload.password = password;
       }
 
-      await client.auth.admin
+      await supabaseAdmin.auth.admin
         .updateUserById(id, updatePayload)
         .catch(() => null);
     }
@@ -391,7 +472,7 @@ export async function PUT(req: NextRequest, context: any) {
       updateFields.employee_id = employeeId;
     }
 
-    const { data: updatedUser, error: dbError } = await client
+    const { data: updatedUser, error: dbError } = await supabaseAdmin
       .from("users")
       .update(updateFields)
       .eq("id", id)
@@ -416,13 +497,10 @@ export async function PUT(req: NextRequest, context: any) {
   }
 }
 
-export async function DELETE(req: NextRequest, context: any) {
+export async function DELETE(req: NextRequest, _context: any) {
   try {
-    const { client, isConfigured, hasServiceRole } = getSupabaseAdmin(
-      req,
-      context
-    );
-    if (!isConfigured || !client) {
+    const { supabaseAdmin, hasServiceRole } = createPerRequestSupabaseAdmin(req);
+    if (!supabaseAdmin) {
       return NextResponse.json(
         { error: "Supabase credentials missing." },
         { status: 503 }
@@ -440,10 +518,10 @@ export async function DELETE(req: NextRequest, context: any) {
     }
 
     if (hasServiceRole) {
-      await client.auth.admin.deleteUser(id).catch(() => null);
+      await supabaseAdmin.auth.admin.deleteUser(id).catch(() => null);
     }
 
-    const { error: dbDelError } = await client
+    const { error: dbDelError } = await supabaseAdmin
       .from("users")
       .delete()
       .eq("id", id);

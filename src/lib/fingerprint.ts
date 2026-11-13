@@ -3,21 +3,23 @@
 /**
  * Generates a deterministic hardware + browser fingerprint that remains
  * identical across normal tabs AND Incognito / Private browsing windows
- * on the same device & browser.
+ * on the same device & browser, plus a clean human-readable device summary
+ * (e.g., "Chrome on Windows", "Safari on iPhone").
  */
 export async function generateDeviceFingerprint(): Promise<{
   fingerprint: string;
   deviceSummary: string;
 }> {
   if (typeof window === "undefined") {
-    return { fingerprint: "server-env", deviceSummary: "Server" };
+    return { fingerprint: "server-env", deviceSummary: "Web Browser" };
   }
 
   const components: string[] = [];
 
-  // 1. Platform, CPU cores, Touch points, Screen metrics, Pixel Ratio
   const nav = window.navigator;
   const scr = window.screen;
+  const ua = nav.userAgent || "";
+
   components.push(`platform:${nav.platform || "unknown"}`);
   components.push(`cores:${nav.hardwareConcurrency || 0}`);
   components.push(`touch:${nav.maxTouchPoints || 0}`);
@@ -25,9 +27,8 @@ export async function generateDeviceFingerprint(): Promise<{
     `screen:${scr.width}x${scr.height}x${scr.colorDepth}@${window.devicePixelRatio || 1}`
   );
   components.push(`lang:${nav.language || "en"}`);
-  components.push(`ua:${nav.userAgent || ""}`);
+  components.push(`ua:${ua}`);
 
-  // 2. WebGL GPU Vendor & Renderer (Hardware-bound, identical in Incognito)
   try {
     const canvas = document.createElement("canvas");
     const gl =
@@ -46,7 +47,6 @@ export async function generateDeviceFingerprint(): Promise<{
     components.push("gpu:unavailable");
   }
 
-  // 3. Canvas 2D rendering signature (Engine + OS font rasterization)
   try {
     const canvas = document.createElement("canvas");
     canvas.width = 220;
@@ -67,7 +67,6 @@ export async function generateDeviceFingerprint(): Promise<{
 
   const rawString = components.join("||");
 
-  // Hash using SHA-256
   let hashHex = "";
   try {
     const encoder = new TextEncoder();
@@ -80,7 +79,6 @@ export async function generateDeviceFingerprint(): Promise<{
       .slice(0, 24)
       .toUpperCase();
   } catch {
-    // Fallback hash if crypto.subtle is unavailable on non-HTTPS local IP
     let h = 2166136261;
     for (let i = 0; i < rawString.length; i++) {
       h ^= rawString.charCodeAt(i);
@@ -89,19 +87,34 @@ export async function generateDeviceFingerprint(): Promise<{
     hashHex = Math.abs(h).toString(16).toUpperCase().padStart(12, "0");
   }
 
-  // Readable device summary for Admin Dashboard
-  const isMobile = /Mobile|Android|iPhone|iPad/i.test(nav.userAgent);
-  const browserName = /Edg/i.test(nav.userAgent)
+  // Clean, non-technical browser and OS name (e.g., "Chrome on Windows", "Safari on iPhone")
+  const browserName = /Edg/i.test(ua)
     ? "Edge"
-    : /Chrome/i.test(nav.userAgent)
+    : /OPR|Opera/i.test(ua)
+    ? "Opera"
+    : /Chrome|CriOS/i.test(ua)
     ? "Chrome"
-    : /Safari/i.test(nav.userAgent)
-    ? "Safari"
-    : /Firefox/i.test(nav.userAgent)
+    : /Firefox|FxiOS/i.test(ua)
     ? "Firefox"
+    : /Safari/i.test(ua)
+    ? "Safari"
     : "Browser";
 
-  const deviceSummary = `${isMobile ? "Mobile" : "Desktop"} (${browserName}, ${scr.width}x${scr.height}) [ID:${hashHex.slice(0, 8)}]`;
+  const osName = /iPhone/i.test(ua)
+    ? "iPhone"
+    : /iPad/i.test(ua)
+    ? "iPad"
+    : /Android/i.test(ua)
+    ? "Android"
+    : /Windows/i.test(ua)
+    ? "Windows"
+    : /Mac OS X|Macintosh/i.test(ua)
+    ? "macOS"
+    : /Linux/i.test(ua)
+    ? "Linux"
+    : "Device";
+
+  const deviceSummary = `${browserName} on ${osName}`;
 
   return {
     fingerprint: `FP-${hashHex}`,

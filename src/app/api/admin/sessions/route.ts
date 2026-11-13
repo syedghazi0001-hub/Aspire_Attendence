@@ -1,11 +1,71 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { createClient } from "@supabase/supabase-js";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getPktTimeInfo } from "@/lib/pktTime";
 
-export async function GET(req: NextRequest, context: any) {
-  const { client, isConfigured } = getSupabaseAdmin(req, context);
-  if (!isConfigured || !client) {
+function createAdminClientFromCloudflare(req: NextRequest) {
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    if (env) cfEnv = env as Record<string, any>;
+  } catch {
+    // Fallback for local dev
+  }
+
+  const supabaseUrl = String(
+    cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
+      cfEnv.SUPABASE_URL ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.SUPABASE_URL ||
+      ""
+  ).trim();
+
+  const anonKey = String(
+    cfEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      cfEnv.SUPABASE_ANON_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.SUPABASE_ANON_KEY ||
+      ""
+  ).trim();
+
+  const serviceRoleKey = String(
+    cfEnv.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      ""
+  ).trim();
+
+  const hasServiceRole = Boolean(serviceRoleKey && serviceRoleKey !== anonKey);
+  const activeKey = hasServiceRole ? serviceRoleKey : anonKey;
+  if (!supabaseUrl || !activeKey) {
+    return { client: null, hasServiceRole: false };
+  }
+
+  const authHeader = req.headers.get("authorization") || "";
+  const client = createClient(supabaseUrl, activeKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    ...(!hasServiceRole && authHeader
+      ? { global: { headers: { Authorization: authHeader } } }
+      : {}),
+  });
+
+  return { client, hasServiceRole };
+}
+
+function cleanDeviceLabel(raw?: string | null): string {
+  const val = (raw || "").trim();
+  if (!val) return "Web Browser";
+  return (
+    val
+      .replace(/\s*\[ID:[^\]]+\]/gi, "")
+      .replace(/\s*\(\d+x\d+\)/g, "")
+      .trim() || "Web Browser"
+  );
+}
+
+export async function GET(req: NextRequest, _context: any) {
+  const { client } = createAdminClientFromCloudflare(req);
+  if (!client) {
     return NextResponse.json({
       session_requests: [],
       active_locked_users: [],
@@ -14,6 +74,29 @@ export async function GET(req: NextRequest, context: any) {
   }
 
   try {
+    const { data: pendingReqs } = await client
+      .from("session_requests")
+      .select(
+        `
+        id,
+        user_id,
+        request_type,
+        device_id,
+        device_info,
+        status,
+        created_at,
+        users (
+          id,
+          employee_id,
+          full_name,
+          role,
+          device_id
+        )
+      `
+      )
+      .eq("status", "pending")
+      .order("created_at", { ascending: false });
+
     const { data: activeSess } = await client
       .from("active_sessions")
       .select(
@@ -40,24 +123,38 @@ export async function GET(req: NextRequest, context: any) {
       .order("created_at", { ascending: false });
 
     const allSessions = activeSess || [];
+    const formattedRequests: any[] = (pendingReqs || []).map((r: any) => ({
+      ...r,
+      device_info: cleanDeviceLabel(r.device_info),
+    }));
 
-    const pendingRequests = allSessions
-      .filter(
-        (s) =>
-          s.approval_status === "pending_login" ||
-          s.approval_status === "pending_logout"
-      )
-      .map((s) => ({
-        id: s.id,
-        user_id: s.user_id,
-        request_type:
-          s.approval_status === "pending_logout" ? "logout" : "login",
-        device_id: s.device_fingerprint,
-        device_info: s.device_info || "Browser Session",
-        status: "pending",
-        created_at: s.created_at,
-        users: s.users,
-      }));
+    const existingReqKeys = new Set(
+      formattedRequests.map((r) => `${r.user_id}:${r.request_type}`)
+    );
+
+    for (const s of allSessions) {
+      if (
+        s.approval_status === "pending_login" ||
+        s.approval_status === "pending_logout"
+      ) {
+        const rType =
+          s.approval_status === "pending_logout" ? "logout" : "login";
+        const key = `${s.user_id}:${rType}`;
+        if (!existingReqKeys.has(key)) {
+          existingReqKeys.add(key);
+          formattedRequests.push({
+            id: s.id,
+            user_id: s.user_id,
+            request_type: rType,
+            device_id: s.device_fingerprint,
+            device_info: cleanDeviceLabel(s.device_info),
+            status: "pending",
+            created_at: s.created_at,
+            users: s.users,
+          });
+        }
+      }
+    }
 
     const approvedSessions = allSessions.filter(
       (s) =>
@@ -72,7 +169,7 @@ export async function GET(req: NextRequest, context: any) {
         employee_id: string;
         full_name: string;
         role: string;
-        device_id: string;
+        device_info: string;
         created_at: string;
       }
     >();
@@ -85,14 +182,14 @@ export async function GET(req: NextRequest, context: any) {
           employee_id: u.employee_id,
           full_name: u.full_name,
           role: u.role,
-          device_id: s.device_fingerprint,
+          device_info: cleanDeviceLabel(s.device_info),
           created_at: s.created_at,
         });
       }
     }
 
     return NextResponse.json({
-      session_requests: pendingRequests,
+      session_requests: formattedRequests,
       active_locked_users: Array.from(lockedUsersMap.values()),
       sessions: allSessions,
     });
@@ -111,12 +208,9 @@ export async function GET(req: NextRequest, context: any) {
   }
 }
 
-async function handleSessionDecision(req: NextRequest, context: any) {
-  const { client, isConfigured, hasServiceRole } = getSupabaseAdmin(
-    req,
-    context
-  );
-  if (!isConfigured || !client) {
+async function handleSessionDecision(req: NextRequest) {
+  const { client, hasServiceRole } = createAdminClientFromCloudflare(req);
+  if (!client) {
     return NextResponse.json(
       { error: "Supabase credentials missing." },
       { status: 503 }
@@ -130,14 +224,35 @@ async function handleSessionDecision(req: NextRequest, context: any) {
     const rawAction = String(body.action || "").toLowerCase();
     const pktNow = getPktTimeInfo(new Date());
 
+    let reqRecord: {
+      id: string;
+      user_id: string;
+      request_type: string;
+      device_id: string;
+      device_info: string;
+      status: string;
+    } | null = null;
+
+    if (requestId) {
+      const { data: foundReq } = await client
+        .from("session_requests")
+        .select("*")
+        .eq("id", requestId)
+        .maybeSingle();
+      if (foundReq) {
+        reqRecord = foundReq;
+      }
+    }
+
     let sessionRecord: {
       id: string;
       user_id: string;
       device_fingerprint: string;
+      device_info: string;
       approval_status: string;
     } | null = null;
 
-    if (requestId) {
+    if (!reqRecord && requestId) {
       const { data: foundSess } = await client
         .from("active_sessions")
         .select("*")
@@ -148,9 +263,16 @@ async function handleSessionDecision(req: NextRequest, context: any) {
       }
     }
 
-    const uid = sessionRecord?.user_id || targetUserId;
-    const deviceFp =
-      sessionRecord?.device_fingerprint || body.device_id || "";
+    const uid =
+      reqRecord?.user_id || sessionRecord?.user_id || targetUserId;
+    const newDeviceFp =
+      reqRecord?.device_id ||
+      sessionRecord?.device_fingerprint ||
+      body.device_id ||
+      "";
+    const newDeviceInfo = cleanDeviceLabel(
+      reqRecord?.device_info || sessionRecord?.device_info || "Web Browser"
+    );
 
     if (rawAction === "approve_login") {
       if (!uid) {
@@ -160,21 +282,41 @@ async function handleSessionDecision(req: NextRequest, context: any) {
         );
       }
 
-      if (sessionRecord) {
+      if (newDeviceFp) {
         await client
           .from("active_sessions")
           .delete()
           .eq("user_id", uid)
-          .neq("id", sessionRecord.id);
+          .neq("device_fingerprint", newDeviceFp);
 
-        await client
+        const { data: updatedNewSess } = await client
           .from("active_sessions")
           .update({
             is_active: true,
             approval_status: "approved",
+            device_info: newDeviceInfo,
             last_seen: pktNow.isoPkt,
           })
-          .eq("id", sessionRecord.id);
+          .eq("user_id", uid)
+          .eq("device_fingerprint", newDeviceFp)
+          .select();
+
+        if (!updatedNewSess || updatedNewSess.length === 0) {
+          await client.from("active_sessions").insert({
+            user_id: uid,
+            device_fingerprint: newDeviceFp,
+            device_info: newDeviceInfo,
+            is_active: true,
+            approval_status: "approved",
+            created_at: pktNow.isoPkt,
+            last_seen: pktNow.isoPkt,
+          });
+        }
+
+        await client
+          .from("users")
+          .update({ device_id: newDeviceFp })
+          .eq("id", uid);
       } else {
         await client
           .from("active_sessions")
@@ -186,41 +328,33 @@ async function handleSessionDecision(req: NextRequest, context: any) {
           .eq("user_id", uid);
       }
 
-      if (deviceFp) {
+      if (reqRecord) {
         await client
-          .from("users")
-          .update({ device_id: deviceFp })
-          .eq("id", uid);
+          .from("session_requests")
+          .update({ status: "approved" })
+          .eq("id", reqRecord.id);
+      } else {
+        await client
+          .from("session_requests")
+          .update({ status: "approved" })
+          .eq("user_id", uid)
+          .eq("request_type", "login")
+          .eq("status", "pending");
       }
-
-      await client
-        .from("session_requests")
-        .update({ status: "approved" })
-        .eq("user_id", uid)
-        .eq("request_type", "login")
-        .eq("status", "pending");
 
       return NextResponse.json({
         message:
-          "Login request approved! Employee's device fingerprint is now locked in active_sessions.",
+          "New login approved! Previous device session was logged out and the new device is now active.",
       });
     }
 
     if (rawAction === "reject_login") {
-      if (sessionRecord) {
+      if (reqRecord) {
         await client
-          .from("active_sessions")
-          .delete()
-          .eq("id", sessionRecord.id);
+          .from("session_requests")
+          .update({ status: "rejected" })
+          .eq("id", reqRecord.id);
       } else if (uid) {
-        await client
-          .from("active_sessions")
-          .delete()
-          .eq("user_id", uid)
-          .eq("approval_status", "pending_login");
-      }
-
-      if (uid) {
         await client
           .from("session_requests")
           .update({ status: "rejected" })
@@ -229,8 +363,22 @@ async function handleSessionDecision(req: NextRequest, context: any) {
           .eq("status", "pending");
       }
 
+      if (uid && newDeviceFp) {
+        await client
+          .from("active_sessions")
+          .delete()
+          .eq("user_id", uid)
+          .eq("device_fingerprint", newDeviceFp)
+          .eq("approval_status", "pending_login");
+      } else if (sessionRecord) {
+        await client
+          .from("active_sessions")
+          .delete()
+          .eq("id", sessionRecord.id);
+      }
+
       return NextResponse.json({
-        message: "Login request rejected and removed.",
+        message: "New login request rejected. The new device remains blocked.",
       });
     }
 
@@ -261,12 +409,26 @@ async function handleSessionDecision(req: NextRequest, context: any) {
       return NextResponse.json({
         message:
           rawAction === "approve_logout"
-            ? "Logout request approved! Active session cleared — employee can now log in on a new device."
-            : "Force Logout completed! Active session cleared.",
+            ? "Logout request approved! Active session has been cleared."
+            : "Session ended successfully.",
       });
     }
 
     if (rawAction === "reject_logout") {
+      if (reqRecord) {
+        await client
+          .from("session_requests")
+          .update({ status: "rejected" })
+          .eq("id", reqRecord.id);
+      } else if (uid) {
+        await client
+          .from("session_requests")
+          .update({ status: "rejected" })
+          .eq("user_id", uid)
+          .eq("request_type", "logout")
+          .eq("status", "pending");
+      }
+
       if (uid) {
         await client
           .from("active_sessions")
@@ -276,18 +438,10 @@ async function handleSessionDecision(req: NextRequest, context: any) {
             last_seen: pktNow.isoPkt,
           })
           .eq("user_id", uid);
-
-        await client
-          .from("session_requests")
-          .update({ status: "rejected" })
-          .eq("user_id", uid)
-          .eq("request_type", "logout")
-          .eq("status", "pending");
       }
 
       return NextResponse.json({
-        message:
-          "Logout request rejected. Employee remains logged in on their locked device.",
+        message: "Logout request rejected. Employee remains logged in.",
       });
     }
 
@@ -302,10 +456,10 @@ async function handleSessionDecision(req: NextRequest, context: any) {
   }
 }
 
-export async function PUT(req: NextRequest, context: any) {
-  return handleSessionDecision(req, context);
+export async function PUT(req: NextRequest, _context: any) {
+  return handleSessionDecision(req);
 }
 
-export async function POST(req: NextRequest, context: any) {
-  return handleSessionDecision(req, context);
+export async function POST(req: NextRequest, _context: any) {
+  return handleSessionDecision(req);
 }

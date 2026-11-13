@@ -1,9 +1,6 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAdmin, RuntimeEnv } from "@/lib/supabaseAdmin";
-
-interface RouteContext {
-  env?: RuntimeEnv;
-}
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 const DEFAULT_SETTINGS = {
   id: 1,
@@ -16,7 +13,7 @@ const DEFAULT_SETTINGS = {
   qr_code_string: "LAB-DEFAULT-QR-SECRET-2026",
 };
 
-export async function GET(req: NextRequest, context?: RouteContext) {
+export async function GET(req: NextRequest, context: any) {
   const { client, isConfigured } = getSupabaseAdmin(req, context);
   if (!isConfigured || !client) {
     return NextResponse.json({ settings: DEFAULT_SETTINGS });
@@ -64,7 +61,7 @@ export async function GET(req: NextRequest, context?: RouteContext) {
   });
 }
 
-async function handleSaveSettings(req: NextRequest, context?: RouteContext) {
+async function handleSaveSettings(req: NextRequest, context: any) {
   const { client, isConfigured } = getSupabaseAdmin(req, context);
   if (!isConfigured || !client) {
     return NextResponse.json(
@@ -148,10 +145,10 @@ async function handleSaveSettings(req: NextRequest, context?: RouteContext) {
   }
 }
 
-export async function PUT(req: NextRequest, context?: RouteContext) {
+export async function PUT(req: NextRequest, context: any) {
   return handleSaveSettings(req, context);
 }
 
-export async function POST(req: NextRequest, context?: RouteContext) {
+export async function POST(req: NextRequest, context: any) {
   return handleSaveSettings(req, context);
 }

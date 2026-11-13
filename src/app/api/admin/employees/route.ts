@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
@@ -5,12 +6,7 @@ import { getSupabaseAdmin, RuntimeEnv } from "@/lib/supabaseAdmin";
 import { employeeIdToAuthEmail } from "@/lib/geo";
 import { calculateShiftDurationHours } from "@/lib/pktTime";
 
-interface RouteContext {
-  env?: RuntimeEnv;
-  params?: Promise<Record<string, string>>;
-}
-
-function resolveCloudflareOrProcessEnv(context?: RouteContext): RuntimeEnv {
+function resolveCloudflareOrProcessEnv(context: any): RuntimeEnv {
   let cfEnv: RuntimeEnv = {};
   try {
     const cfContext = getCloudflareContext();
@@ -46,7 +42,7 @@ function resolveCloudflareOrProcessEnv(context?: RouteContext): RuntimeEnv {
   };
 }
 
-export async function GET(req: NextRequest, context?: RouteContext) {
+export async function GET(req: NextRequest, context: any) {
   try {
     const { client, isConfigured } = getSupabaseAdmin(req, context);
     if (!isConfigured || !client) {
@@ -83,7 +79,7 @@ export async function GET(req: NextRequest, context?: RouteContext) {
   }
 }
 
-export async function POST(req: NextRequest, context?: RouteContext) {
+export async function POST(req: NextRequest, context: any) {
   try {
     // 1. Fetch environment keys from Cloudflare `context.env` / `getCloudflareContext().env` or `process.env`
     const env = resolveCloudflareOrProcessEnv(context);
@@ -212,7 +208,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
     if (!createAuthError && createdAuth?.user) {
       authUserId = createdAuth.user.id;
     } else if (createAuthError) {
-      // If user email already exists in `auth.users`, locate and update it
       const { data: listData } = await supabaseAdmin.auth.admin.listUsers();
       const existingAuthUser = listData?.users?.find(
         (u) => u.email?.toLowerCase() === email.toLowerCase()
@@ -287,7 +282,7 @@ export async function POST(req: NextRequest, context?: RouteContext) {
   }
 }
 
-export async function PUT(req: NextRequest, context?: RouteContext) {
+export async function PUT(req: NextRequest, context: any) {
   try {
     const { client, isConfigured, hasServiceRole } = getSupabaseAdmin(
       req,
@@ -421,7 +416,7 @@ export async function PUT(req: NextRequest, context?: RouteContext) {
   }
 }
 
-export async function DELETE(req: NextRequest, context?: RouteContext) {
+export async function DELETE(req: NextRequest, context: any) {
   try {
     const { client, isConfigured, hasServiceRole } = getSupabaseAdmin(
       req,

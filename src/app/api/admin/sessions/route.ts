@@ -1,12 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAdmin, RuntimeEnv } from "@/lib/supabaseAdmin";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { getPktTimeInfo } from "@/lib/pktTime";
 
-interface RouteContext {
-  env?: RuntimeEnv;
-}
-
-export async function GET(req: NextRequest, context?: RouteContext) {
+export async function GET(req: NextRequest, context: any) {
   const { client, isConfigured } = getSupabaseAdmin(req, context);
   if (!isConfigured || !client) {
     return NextResponse.json({
@@ -17,7 +14,6 @@ export async function GET(req: NextRequest, context?: RouteContext) {
   }
 
   try {
-    // 1. Fetch active_sessions joined with public.users
     const { data: activeSess } = await client
       .from("active_sessions")
       .select(
@@ -45,7 +41,6 @@ export async function GET(req: NextRequest, context?: RouteContext) {
 
     const allSessions = activeSess || [];
 
-    // Build pending login/logout requests from `active_sessions`
     const pendingRequests = allSessions
       .filter(
         (s) =>
@@ -64,7 +59,6 @@ export async function GET(req: NextRequest, context?: RouteContext) {
         users: s.users,
       }));
 
-    // Build active locked users list
     const approvedSessions = allSessions.filter(
       (s) =>
         s.approval_status === "approved" ||
@@ -117,7 +111,7 @@ export async function GET(req: NextRequest, context?: RouteContext) {
   }
 }
 
-async function handleSessionDecision(req: NextRequest, context?: RouteContext) {
+async function handleSessionDecision(req: NextRequest, context: any) {
   const { client, isConfigured, hasServiceRole } = getSupabaseAdmin(
     req,
     context
@@ -136,7 +130,6 @@ async function handleSessionDecision(req: NextRequest, context?: RouteContext) {
     const rawAction = String(body.action || "").toLowerCase();
     const pktNow = getPktTimeInfo(new Date());
 
-    // Look up the session row in `active_sessions` if requestId is given
     let sessionRecord: {
       id: string;
       user_id: string;
@@ -159,7 +152,6 @@ async function handleSessionDecision(req: NextRequest, context?: RouteContext) {
     const deviceFp =
       sessionRecord?.device_fingerprint || body.device_id || "";
 
-    // 1. APPROVE LOGIN -> Approve this device in `active_sessions`, clear any old device sessions, and set `users.device_id`
     if (rawAction === "approve_login") {
       if (!uid) {
         return NextResponse.json(
@@ -168,7 +160,6 @@ async function handleSessionDecision(req: NextRequest, context?: RouteContext) {
         );
       }
 
-      // Remove any older sessions for this employee on other devices
       if (sessionRecord) {
         await client
           .from("active_sessions")
@@ -215,7 +206,6 @@ async function handleSessionDecision(req: NextRequest, context?: RouteContext) {
       });
     }
 
-    // 2. REJECT LOGIN
     if (rawAction === "reject_login") {
       if (sessionRecord) {
         await client
@@ -244,8 +234,11 @@ async function handleSessionDecision(req: NextRequest, context?: RouteContext) {
       });
     }
 
-    // 3. APPROVE LOGOUT -> Clear `active_sessions` record and `users.device_id` so employee can log in on a new device
-    if (rawAction === "approve_logout" || rawAction === "force_logout" || rawAction === "revoke") {
+    if (
+      rawAction === "approve_logout" ||
+      rawAction === "force_logout" ||
+      rawAction === "revoke"
+    ) {
       if (!uid) {
         return NextResponse.json(
           { error: "Employee user_id is required to clear active session." },
@@ -273,7 +266,6 @@ async function handleSessionDecision(req: NextRequest, context?: RouteContext) {
       });
     }
 
-    // 4. REJECT LOGOUT -> Keep employee's active session `approved`
     if (rawAction === "reject_logout") {
       if (uid) {
         await client
@@ -310,10 +302,10 @@ async function handleSessionDecision(req: NextRequest, context?: RouteContext) {
   }
 }
 
-export async function PUT(req: NextRequest, context?: RouteContext) {
+export async function PUT(req: NextRequest, context: any) {
   return handleSessionDecision(req, context);
 }
 
-export async function POST(req: NextRequest, context?: RouteContext) {
+export async function POST(req: NextRequest, context: any) {
   return handleSessionDecision(req, context);
 }

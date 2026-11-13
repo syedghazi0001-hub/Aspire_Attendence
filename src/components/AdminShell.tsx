@@ -19,9 +19,15 @@ import {
 
 interface AdminShellProps {
   children: React.ReactNode;
+  title?: string;
+  subtitle?: string;
 }
 
-export default function AdminShell({ children }: AdminShellProps) {
+export default function AdminShell({
+  children,
+  title,
+  subtitle,
+}: AdminShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [adminEmail, setAdminEmail] = useState<string>("Admin");
@@ -215,6 +221,32 @@ export default function AdminShell({ children }: AdminShellProps) {
               or Cloudflare Worker Variables.
             </span>
           </div>
+        )}
+
+        {(title || subtitle) && (
+          <header className="px-4 sm:px-6 lg:px-8 pt-4 sm:pt-6">
+            <div className="max-w-7xl mx-auto glass-panel rounded-3xl px-6 py-4 flex items-center justify-between gap-4">
+              <div>
+                {title && (
+                  <h2 className="text-lg sm:text-xl font-extrabold text-slate-800 dark:text-white tracking-tight">
+                    {title}
+                  </h2>
+                )}
+                {subtitle && (
+                  <p className="text-xs sm:text-sm font-medium text-slate-600 dark:text-slate-300 mt-0.5">
+                    {subtitle}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={handleLogout}
+                className="md:hidden inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold btn-3d-rose shrink-0"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Sign Out</span>
+              </button>
+            </div>
+          </header>
         )}
 
         <motion.main

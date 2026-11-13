@@ -1,15 +1,15 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAdmin, RuntimeEnv } from "@/lib/supabaseAdmin";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { employeeIdToAuthEmail } from "@/lib/geo";
 import { getPktTimeInfo } from "@/lib/pktTime";
 
-interface RouteContext {
-  env?: RuntimeEnv;
-}
-
 function generateSessionToken(): string {
   const bytes = new Uint8Array(24);
-  if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
+  if (
+    typeof globalThis.crypto !== "undefined" &&
+    globalThis.crypto.getRandomValues
+  ) {
     globalThis.crypto.getRandomValues(bytes);
   } else {
     for (let i = 0; i < bytes.length; i++) {
@@ -19,7 +19,7 @@ function generateSessionToken(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export async function POST(req: NextRequest, context?: RouteContext) {
+export async function POST(req: NextRequest, context: any) {
   try {
     const { client, anonClient, isConfigured } = getSupabaseAdmin(req, context);
     if (!isConfigured || !client || !anonClient) {
@@ -55,7 +55,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
       ? rawIdentifier.toLowerCase()
       : employeeIdToAuthEmail(normalizedEmpId);
 
-    // 1. Authenticate credentials against Supabase Auth
     const { data: authData, error: authErr } =
       await anonClient.auth.signInWithPassword({
         email: loginEmail,
@@ -71,7 +70,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
       );
     }
 
-    // 2. Look up user row in `public.users`
     let { data: userRecord } = await client
       .from("users")
       .select("*")
@@ -87,7 +85,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
       userRecord = byEmpId;
     }
 
-    // 3. If user is Admin (or not an employee row), allow unrestricted multi-device Admin access
     if (!userRecord || userRecord.role === "admin") {
       return NextResponse.json({
         role: "admin",
@@ -104,7 +101,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
 
     const pktNow = getPktTimeInfo(new Date());
 
-    // 4. Check `public.active_sessions` for this employee
     const { data: userSessions } = await client
       .from("active_sessions")
       .select("*")
@@ -114,7 +110,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
 
     const activeSessionsList = userSessions || [];
 
-    // Case A: Employee has an active approved session on ANOTHER device -> block & create `pending_login` request for Admin
     const approvedOtherDevice = activeSessionsList.find(
       (s) =>
         (s.approval_status === "approved" ||
@@ -128,7 +123,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
         userRecord.device_id.trim() !== "" &&
         userRecord.device_id !== deviceFingerprint)
     ) {
-      // Check if a pending_login row for this new device_fingerprint already exists
       const existingPendingOnThisDevice = activeSessionsList.find(
         (s) =>
           s.device_fingerprint === deviceFingerprint &&
@@ -174,7 +168,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
       );
     }
 
-    // Case B: Employee already has an approved active session on THIS exact `device_fingerprint`
     const existingApprovedSameDevice = activeSessionsList.find(
       (s) =>
         s.device_fingerprint === deviceFingerprint &&
@@ -218,7 +211,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
       });
     }
 
-    // Case C: First-time login or pending login on this device -> create `pending_login` in `active_sessions`
     const existingPendingSameDevice = activeSessionsList.find(
       (s) =>
         s.device_fingerprint === deviceFingerprint &&

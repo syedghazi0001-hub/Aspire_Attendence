@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest } from "next/server";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
@@ -15,7 +16,7 @@ export interface RuntimeEnv {
  * Resolves environment variables on Cloudflare Workers (OpenNext `getCloudflareContext().env`
  * or route `context.env`) with seamless fallback to `process.env` for local development.
  */
-export function resolveRuntimeEnv(routeContext?: { env?: RuntimeEnv }): RuntimeEnv {
+export function resolveRuntimeEnv(routeContext?: any): RuntimeEnv {
   let cfEnv: RuntimeEnv = {};
   try {
     const cfContext = getCloudflareContext();
@@ -23,10 +24,10 @@ export function resolveRuntimeEnv(routeContext?: { env?: RuntimeEnv }): RuntimeE
       cfEnv = cfContext.env as unknown as RuntimeEnv;
     }
   } catch {
-    // Not running inside OpenNext Cloudflare Worker request context (e.g., standard `next dev`)
+    // Not running inside OpenNext Cloudflare Worker request context (e.g., standard `next dev` / build)
   }
 
-  const passedEnv = routeContext?.env || {};
+  const passedEnv: RuntimeEnv = routeContext?.env || {};
 
   return {
     NEXT_PUBLIC_SUPABASE_URL:
@@ -53,10 +54,7 @@ export function resolveRuntimeEnv(routeContext?: { env?: RuntimeEnv }): RuntimeE
   };
 }
 
-export function getSupabaseAdmin(
-  req?: NextRequest,
-  routeContext?: { env?: RuntimeEnv }
-) {
+export function getSupabaseAdmin(req?: NextRequest, routeContext?: any) {
   const env = resolveRuntimeEnv(routeContext);
 
   const supabaseUrl = (env.NEXT_PUBLIC_SUPABASE_URL || "").trim();

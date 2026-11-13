@@ -1,12 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAdmin, RuntimeEnv } from "@/lib/supabaseAdmin";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { getPktTimeInfo } from "@/lib/pktTime";
 
-interface RouteContext {
-  env?: RuntimeEnv;
-}
-
-export async function GET(req: NextRequest, context?: RouteContext) {
+export async function GET(req: NextRequest, context: any) {
   const { client, isConfigured } = getSupabaseAdmin(req, context);
   if (!isConfigured || !client) {
     return NextResponse.json(
@@ -72,7 +69,6 @@ export async function GET(req: NextRequest, context?: RouteContext) {
 
   const pktNow = getPktTimeInfo(new Date());
 
-  // Fetch today's attendance in PKT
   const { data: rawTodayAttendance } = await client
     .from("attendance")
     .select("*")
@@ -98,7 +94,6 @@ export async function GET(req: NextRequest, context?: RouteContext) {
       }
     : null;
 
-  // Check `active_sessions` for this token or user
   if (sessionRow) {
     if (!sessionRow.is_active || sessionRow.approval_status === "rejected") {
       return NextResponse.json(
@@ -140,7 +135,6 @@ export async function GET(req: NextRequest, context?: RouteContext) {
     });
   }
 
-  // Fallback check against `users.device_id`
   if (userRow.device_id && fp && userRow.device_id !== fp) {
     return NextResponse.json(
       {
@@ -176,13 +170,7 @@ export async function GET(req: NextRequest, context?: RouteContext) {
   );
 }
 
-/**
- * POST /api/employee/session
- * Employee clicks "Request Logout".
- * Marks `active_sessions.approval_status = 'pending_logout'` (and logs into `session_requests`).
- * Employee CANNOT self-logout — Admin must approve to clear `active_sessions`.
- */
-export async function POST(req: NextRequest, context?: RouteContext) {
+export async function POST(req: NextRequest, context: any) {
   const { client, isConfigured } = getSupabaseAdmin(req, context);
   if (!isConfigured || !client) {
     return NextResponse.json(

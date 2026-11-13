@@ -1,13 +1,10 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAdmin, RuntimeEnv } from "@/lib/supabaseAdmin";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { calculateDistanceInMeters } from "@/lib/geo";
 import { getPktTimeInfo, calculateShiftMetricsPkt } from "@/lib/pktTime";
 
-interface RouteContext {
-  env?: RuntimeEnv;
-}
-
-export async function POST(req: NextRequest, context?: RouteContext) {
+export async function POST(req: NextRequest, context: any) {
   const { client, isConfigured } = getSupabaseAdmin(req, context);
   if (!isConfigured || !client) {
     return NextResponse.json(
@@ -35,7 +32,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
       );
     }
 
-    // 1. Verify employee's active session in `public.active_sessions`
     const { data: sessionRow } = await client
       .from("active_sessions")
       .select("*")
@@ -85,7 +81,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
       );
     }
 
-    // 2. Confirm QR code was scanned
     if (!qrData || typeof qrData !== "string" || !qrData.trim()) {
       return NextResponse.json(
         {
@@ -96,7 +91,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
       );
     }
 
-    // 3. Validate Employee's Mobile GPS Coordinates
     const empLat = Number(rawLat);
     const empLng = Number(rawLng);
     if (
@@ -114,7 +108,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
       );
     }
 
-    // 4. Fetch Admin's saved GPS Coordinates & Allowed Radius
     const { data: settingsRow } = await client
       .from("settings")
       .select("*")
@@ -137,7 +130,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
       settingsRow?.radius_meters ?? settingsRow?.allowed_radius_meters ?? 100
     );
 
-    // 5. Calculate Haversine distance in meters
     const distanceMeters = calculateDistanceInMeters(
       empLat,
       empLng,
@@ -162,7 +154,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
     const dutyStart = userRow.duty_start_time || "09:00:00";
     const dutyEnd = userRow.duty_end_time || "17:00:00";
 
-    // 6. Calculate exact PKT time (UTC+5)
     const pktNow = getPktTimeInfo(new Date());
 
     const { data: existingRecord } = await client
@@ -177,7 +168,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
     const existingClockOut =
       existingRecord?.clock_out || existingRecord?.logout_time || null;
 
-    // FIRST SCAN OF THE DAY -> CLOCK IN
     if (!existingRecord || !existingClockIn) {
       const { data: inserted, error: insertErr } = await client
         .from("attendance")
@@ -217,7 +207,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
       });
     }
 
-    // SECOND SCAN OF THE DAY -> CLOCK OUT + OVERTIME / SHORT LEAVE CALCULATION
     if (!existingClockOut) {
       const { overtimeMinutes, overtimeHours, missedHours } =
         calculateShiftMetricsPkt(
@@ -244,7 +233,6 @@ export async function POST(req: NextRequest, context?: RouteContext) {
         return NextResponse.json({ error: updateErr.message }, { status: 500 });
       }
 
-      // If employee clocked out early (missedHours > 0), record a 'short' leave in `public.leaves`
       if (missedHours > 0) {
         await client.from("leaves").upsert(
           {

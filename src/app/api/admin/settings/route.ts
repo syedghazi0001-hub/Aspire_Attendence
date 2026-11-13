@@ -3,14 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
-function createAdminClientFromCloudflare(req: NextRequest) {
-  let cfEnv: Record<string, any> = {};
-  try {
-    const { env } = getCloudflareContext();
-    if (env) cfEnv = env as Record<string, any>;
-  } catch {
-    // Fallback for local dev
-  }
+function createAdminClientFromCloudflare(req: NextRequest, cfEnv: Record<string, any>) {
 
   const supabaseUrl = String(
     cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
@@ -58,7 +51,13 @@ const DEFAULT_SETTINGS = {
 };
 
 export async function GET(req: NextRequest, _context: any) {
-  const client = createAdminClientFromCloudflare(req);
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  const client = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
     return NextResponse.json({ settings: DEFAULT_SETTINGS });
   }
@@ -105,8 +104,8 @@ export async function GET(req: NextRequest, _context: any) {
   });
 }
 
-async function handleSaveSettings(req: NextRequest) {
-  const client = createAdminClientFromCloudflare(req);
+async function handleSaveSettings(req: NextRequest, cfEnv: Record<string, any>) {
+  const client = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
     return NextResponse.json(
       { error: "Supabase credentials missing." },
@@ -125,7 +124,7 @@ async function handleSaveSettings(req: NextRequest) {
     const radiusMeters =
       parseFloat(
         String(body.radius_meters ?? body.allowed_radius_meters ?? "100")
-      ) || 100;
+      );
     const qrSecret = String(
       body.qr_secret ||
         body.qr_code_string ||
@@ -133,7 +132,9 @@ async function handleSaveSettings(req: NextRequest) {
         "LAB-DEFAULT-QR-SECRET-2026"
     ).trim();
 
-    if (Number.isNaN(lat) || Number.isNaN(lng)) {
+    if (!Number.isFinite(radiusMeters) || radiusMeters < 1) return NextResponse.json({ error: "Radius must be at least 1 meter." }, { status: 400 });
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
       return NextResponse.json(
         { error: "Please enter valid numeric Latitude and Longitude." },
         { status: 400 }
@@ -190,9 +191,21 @@ async function handleSaveSettings(req: NextRequest) {
 }
 
 export async function PUT(req: NextRequest, _context: any) {
-  return handleSaveSettings(req);
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  return handleSaveSettings(req, cfEnv);
 }
 
 export async function POST(req: NextRequest, _context: any) {
-  return handleSaveSettings(req);
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  return handleSaveSettings(req, cfEnv);
 }

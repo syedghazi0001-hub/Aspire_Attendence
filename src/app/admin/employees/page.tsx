@@ -360,7 +360,7 @@ export default function EmployeeListPage() {
                     const totalOtHours =
                       Math.round(
                         empAtt.reduce(
-                          (s, r) => s + Number(r.overtime_hours || 0),
+                          (s, r) => s + Math.max(0, Number(r.overtime_hours || 0)),
                           0
                         ) * 100
                       ) / 100;

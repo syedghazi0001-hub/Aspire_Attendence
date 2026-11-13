@@ -4,14 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getPktTimeInfo } from "@/lib/pktTime";
 
-function createAdminClientFromCloudflare() {
-  let cfEnv: Record<string, any> = {};
-  try {
-    const { env } = getCloudflareContext();
-    if (env) cfEnv = env as Record<string, any>;
-  } catch {
-    // Fallback for local dev
-  }
+function createAdminClientFromCloudflare(cfEnv: Record<string, any>) {
 
   const supabaseUrl = String(
     cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
@@ -44,7 +37,13 @@ function createAdminClientFromCloudflare() {
 }
 
 export async function GET(req: NextRequest, _context: any) {
-  const client = createAdminClientFromCloudflare();
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  const client = createAdminClientFromCloudflare(cfEnv);
   if (!client) {
     return NextResponse.json(
       {
@@ -245,7 +244,13 @@ export async function GET(req: NextRequest, _context: any) {
 }
 
 export async function POST(req: NextRequest, _context: any) {
-  const client = createAdminClientFromCloudflare();
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  const client = createAdminClientFromCloudflare(cfEnv);
   if (!client) {
     return NextResponse.json(
       { error: "Supabase is not configured." },

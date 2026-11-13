@@ -4,14 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getPktTimeInfo } from "@/lib/pktTime";
 
-function createAdminClientFromCloudflare(req: NextRequest) {
-  let cfEnv: Record<string, any> = {};
-  try {
-    const { env } = getCloudflareContext();
-    if (env) cfEnv = env as Record<string, any>;
-  } catch {
-    // Fallback for local dev
-  }
+function createAdminClientFromCloudflare(req: NextRequest, cfEnv: Record<string, any>) {
 
   const supabaseUrl = String(
     cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
@@ -64,7 +57,13 @@ function cleanDeviceLabel(raw?: string | null): string {
 }
 
 export async function GET(req: NextRequest, _context: any) {
-  const { client } = createAdminClientFromCloudflare(req);
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  const { client } = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
     return NextResponse.json({
       session_requests: [],
@@ -208,8 +207,8 @@ export async function GET(req: NextRequest, _context: any) {
   }
 }
 
-async function handleSessionDecision(req: NextRequest) {
-  const { client, hasServiceRole } = createAdminClientFromCloudflare(req);
+async function handleSessionDecision(req: NextRequest, cfEnv: Record<string, any>) {
+  const { client, hasServiceRole } = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
     return NextResponse.json(
       { error: "Supabase credentials missing." },
@@ -457,9 +456,21 @@ async function handleSessionDecision(req: NextRequest) {
 }
 
 export async function PUT(req: NextRequest, _context: any) {
-  return handleSessionDecision(req);
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  return handleSessionDecision(req, cfEnv);
 }
 
 export async function POST(req: NextRequest, _context: any) {
-  return handleSessionDecision(req);
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  return handleSessionDecision(req, cfEnv);
 }

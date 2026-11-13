@@ -133,7 +133,7 @@ export default function AdminShell({
                 </div>
                 <div>
                   <div className="flex items-center gap-1.5">
-                    <h1 className="font-extrabold text-sm tracking-tight text-slate-800 dark:text-white leading-tight">
+                    <h1 className="font-medium text-sm tracking-tight text-slate-800 dark:text-white leading-tight">
                       PulseHR Cloud
                     </h1>
                     <Sparkles className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />
@@ -178,7 +178,7 @@ export default function AdminShell({
           {/* Admin Account Footer */}
           <div className="p-4 border-t border-white/40 dark:border-slate-600/40 hidden md:block">
             <div className="glass-card-3d rounded-2xl p-3 mb-3">
-              <div className="text-[10px] uppercase tracking-wider font-bold text-indigo-600 dark:text-indigo-300">
+              <div className="text-[10px] uppercase tracking-wider font-medium text-indigo-600 dark:text-indigo-300">
                 Multi-Device Admin
               </div>
               <div className="text-xs text-slate-700 dark:text-slate-200 font-semibold truncate mt-0.5">
@@ -187,7 +187,7 @@ export default function AdminShell({
             </div>
             <button
               onClick={handleLogout}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold btn-3d-rose"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-medium btn-3d-rose"
             >
               <LogOut className="w-4 h-4" />
               <span>Sign Out</span>
@@ -228,7 +228,7 @@ export default function AdminShell({
             <div className="max-w-7xl mx-auto glass-panel rounded-3xl px-6 py-4 flex items-center justify-between gap-4">
               <div>
                 {title && (
-                  <h2 className="text-lg sm:text-xl font-extrabold text-slate-800 dark:text-white tracking-tight">
+                  <h2 className="text-lg sm:text-xl font-medium text-slate-800 dark:text-white tracking-tight">
                     {title}
                   </h2>
                 )}
@@ -240,7 +240,7 @@ export default function AdminShell({
               </div>
               <button
                 onClick={handleLogout}
-                className="md:hidden inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold btn-3d-rose shrink-0"
+                className="md:hidden inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium btn-3d-rose shrink-0"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Sign Out</span>

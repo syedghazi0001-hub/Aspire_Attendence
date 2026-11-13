@@ -173,7 +173,7 @@ export default function UnifiedLoginPage() {
           </div>
           <div>
             <div className="flex items-center gap-1.5">
-              <span className="font-extrabold text-sm tracking-tight text-slate-800 dark:text-white">
+              <span className="font-medium text-sm tracking-tight text-slate-800 dark:text-white">
                 PulseHR Cloud
               </span>
               <Sparkles className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />
@@ -204,11 +204,11 @@ export default function UnifiedLoginPage() {
                   className="w-14 h-14 rounded-2xl object-contain"
                 />
               </div>
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider bg-indigo-500/15 text-indigo-700 dark:text-indigo-200 border border-indigo-400/30 mb-2.5">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium uppercase tracking-wider bg-indigo-500/15 text-indigo-700 dark:text-indigo-200 border border-indigo-400/30 mb-2.5">
                 <ShieldCheck className="w-3.5 h-3.5" />
                 Secure Workspace Sign In
               </span>
-              <h1 className="text-2xl font-extrabold text-slate-800 dark:text-white tracking-tight">
+              <h1 className="text-2xl font-medium text-slate-800 dark:text-white tracking-tight">
                 Welcome Back
               </h1>
               <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1">
@@ -248,7 +248,7 @@ export default function UnifiedLoginPage() {
 
             <form onSubmit={handleUnifiedLogin} className="space-y-4">
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
+                <label className="block text-xs font-medium uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
                   Employee ID or Email
                 </label>
                 <div className="relative">
@@ -265,7 +265,7 @@ export default function UnifiedLoginPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
+                <label className="block text-xs font-medium uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
                   Password
                 </label>
                 <div className="relative">
@@ -286,7 +286,7 @@ export default function UnifiedLoginPage() {
                 whileTap={{ scale: 0.98 }}
                 type="submit"
                 disabled={loading}
-                className="w-full rounded-2xl btn-3d-primary py-3.5 px-5 text-sm font-bold flex items-center justify-center gap-2 mt-2"
+                className="w-full rounded-2xl btn-3d-primary py-3.5 px-5 text-sm font-medium flex items-center justify-center gap-2 mt-2"
               >
                 {loading ? (
                   <>

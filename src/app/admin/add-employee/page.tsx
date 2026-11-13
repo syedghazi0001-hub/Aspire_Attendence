@@ -1,10 +1,15 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
+import { motion, AnimatePresence } from "framer-motion";
 import AdminShell from "@/components/AdminShell";
 import { adminFetch } from "@/lib/adminFetch";
 import { calculateShiftDurationHours } from "@/lib/pktTime";
+import {
+  STRICT_EMPLOYEE_ID_REGEX,
+  normalizeEmployeeIdFormat,
+} from "@/lib/geo";
 import {
   UserPlus,
   AlertTriangle,
@@ -12,11 +17,13 @@ import {
   Users,
   Loader2,
   Calculator,
+  Sparkles,
 } from "lucide-react";
 
 export default function AddEmployeePage() {
   const [fullName, setFullName] = useState<string>("");
-  const [employeeId, setEmployeeId] = useState<string>("");
+  const [employeeId, setEmployeeId] = useState<string>("EMP 01");
+  const [suggestedId, setSuggestedId] = useState<string>("EMP 01");
   const [password, setPassword] = useState<string>("");
 
   const [basicSalary, setBasicSalary] = useState<string>("");
@@ -29,6 +36,23 @@ export default function AddEmployeePage() {
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [successMsg, setSuccessMsg] = useState<string>("");
+
+  const fetchNextEmployeeId = useCallback(async () => {
+    try {
+      const res = await adminFetch("/api/admin/employees");
+      const data = await res.json();
+      if (res.ok && data.next_employee_id) {
+        setSuggestedId(data.next_employee_id);
+        setEmployeeId(data.next_employee_id);
+      }
+    } catch {
+      // Keep default EMP 01
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchNextEmployeeId();
+  }, [fetchNextEmployeeId]);
 
   const recalculateRates = (
     salaryVal: string,
@@ -74,10 +98,28 @@ export default function AddEmployeePage() {
     }
   };
 
+  const handleEmployeeIdBlur = () => {
+    const formatted = normalizeEmployeeIdFormat(employeeId);
+    if (formatted) {
+      setEmployeeId(formatted);
+    }
+  };
+
   const handleCreateEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg("");
     setSuccessMsg("");
+
+    const normalizedId = normalizeEmployeeIdFormat(employeeId);
+    setEmployeeId(normalizedId);
+
+    if (!STRICT_EMPLOYEE_ID_REGEX.test(normalizedId)) {
+      setErrorMsg(
+        `Invalid Employee ID format ('${employeeId}'). Please use the strict pattern: EMP 01, EMP 02, EMP 03, etc.`
+      );
+      return;
+    }
+
     setSubmitting(true);
 
     try {
@@ -85,7 +127,7 @@ export default function AddEmployeePage() {
         method: "POST",
         body: JSON.stringify({
           full_name: fullName.trim(),
-          employee_id: employeeId.trim().toUpperCase(),
+          employee_id: normalizedId,
           password: password.trim(),
           basic_salary: parseFloat(basicSalary || "0") || 0,
           monthly_salary: parseFloat(basicSalary || "0") || 0,
@@ -98,7 +140,12 @@ export default function AddEmployeePage() {
         }),
       });
 
-      let result: { error?: string; message?: string; employee?: unknown } = {};
+      let result: {
+        error?: string;
+        message?: string;
+        employee?: unknown;
+        next_employee_id?: string;
+      } = {};
       try {
         result = await response.json();
       } catch {
@@ -115,14 +162,15 @@ export default function AddEmployeePage() {
         return;
       }
 
+      const nextId = result.next_employee_id || suggestedId;
+      setSuggestedId(nextId);
+      setEmployeeId(nextId);
+
       setSuccessMsg(
         result.message ||
-          `Employee '${fullName.trim()}' (${employeeId
-            .trim()
-            .toUpperCase()}) added immediately to auth.users & public.users!`
+          `Employee '${fullName.trim()}' (${normalizedId}) added immediately!`
       );
       setFullName("");
-      setEmployeeId("");
       setPassword("");
       setBasicSalary("");
       setPerDayDeduction("");
@@ -144,81 +192,94 @@ export default function AddEmployeePage() {
   return (
     <AdminShell
       title="Add New Employee"
-      subtitle="Creates employee in auth.users and public.users immediately (no approval required to add; approval only applies on first device login)"
+      subtitle="Strict 'EMP 01' ID pattern with automatic next-ID suggestion and duplicate name/ID protection"
     >
       <div className="max-w-3xl mx-auto space-y-6">
-        {errorMsg && (
-          <div
-            role="alert"
-            className="glass-panel rounded-3xl border-rose-400/50 p-5 text-rose-900 dark:text-rose-100"
-          >
-            <div className="flex items-start gap-3.5">
-              <AlertTriangle className="w-6 h-6 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
-              <div className="space-y-1 flex-1">
-                <h3 className="text-sm font-extrabold">
-                  Error: Employee Could Not Be Saved
-                </h3>
-                <p className="text-xs font-medium leading-relaxed break-words">
-                  {errorMsg}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {successMsg && (
-          <div
-            role="status"
-            className="glass-panel rounded-3xl border-emerald-400/50 p-5 text-emerald-950 dark:text-emerald-100"
-          >
-            <div className="flex items-start gap-3.5">
-              <CheckCircle2 className="w-6 h-6 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-              <div className="space-y-2.5 flex-1">
-                <h3 className="text-sm font-extrabold">
-                  Employee Added Immediately
-                </h3>
-                <p className="text-xs font-medium">{successMsg}</p>
-                <div className="pt-1">
-                  <Link
-                    href="/admin/employees"
-                    className="btn-3d-emerald inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold"
-                  >
-                    <Users className="w-4 h-4" />
-                    View Employees &amp; Payroll &rarr;
-                  </Link>
+        <AnimatePresence mode="wait">
+          {errorMsg && (
+            <motion.div
+              key="error"
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              role="alert"
+              className="glass-panel rounded-3xl border-rose-400/50 p-5 text-rose-900 dark:text-rose-200"
+            >
+              <div className="flex items-start gap-3.5">
+                <AlertTriangle className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
+                <div className="space-y-1 flex-1">
+                  <h3 className="text-sm font-semibold">
+                    Validation or Database Error
+                  </h3>
+                  <p className="text-xs leading-relaxed break-words">
+                    {errorMsg}
+                  </p>
                 </div>
               </div>
-            </div>
-          </div>
-        )}
+            </motion.div>
+          )}
 
-        <div className="glass-panel rounded-3xl overflow-hidden">
-          <div className="px-7 py-5 border-b border-white/40 dark:border-slate-700/60 flex items-center justify-between flex-wrap gap-3">
+          {successMsg && (
+            <motion.div
+              key="success"
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              role="status"
+              className="glass-panel rounded-3xl border-emerald-400/50 p-5 text-emerald-950 dark:text-emerald-200"
+            >
+              <div className="flex items-start gap-3.5">
+                <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
+                <div className="space-y-2.5 flex-1">
+                  <h3 className="text-sm font-semibold">
+                    Employee Created &amp; Auto-Confirmed
+                  </h3>
+                  <p className="text-xs">{successMsg}</p>
+                  <div className="pt-1">
+                    <Link
+                      href="/admin/employees"
+                      className="btn-3d-emerald inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium"
+                    >
+                      <Users className="w-4 h-4" />
+                      View Employees &amp; Payroll &rarr;
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <motion.div
+          initial={{ opacity: 0, y: 14 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="glass-panel rounded-3xl overflow-hidden"
+        >
+          <div className="px-7 py-5 border-b border-white/40 dark:border-white/10 flex items-center justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-2xl btn-3d-primary">
                 <UserPlus className="w-5 h-5" />
               </div>
               <div>
-                <h2 className="text-base font-extrabold text-slate-800 dark:text-white">
-                  Employee Account &amp; Compensation Form
+                <h2 className="text-base font-semibold tracking-tight text-slate-900 dark:text-white">
+                  Employee Onboarding &amp; Shift Configuration
                 </h2>
-                <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
-                  Hourly rate auto-calculates from Per-Day Deduction &divide;{" "}
-                  {shiftHours}h shift duration
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Next available Employee ID auto-suggested: {suggestedId}
                 </p>
               </div>
             </div>
 
-            <span className="inline-flex items-center gap-1.5 rounded-xl glass-card-3d px-3.5 py-1.5 text-xs font-bold text-indigo-700 dark:text-indigo-300">
+            <span className="inline-flex items-center gap-1.5 rounded-xl glass-card-3d px-3.5 py-1.5 text-xs font-medium text-indigo-700 dark:text-indigo-300">
               <Calculator className="w-3.5 h-3.5" />
-              Shift: {shiftHours} hrs/day
+              Shift Duration: {shiftHours} hrs/day
             </span>
           </div>
 
           <form onSubmit={handleCreateEmployee} className="p-7 space-y-6">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-2">
+                <label className="block text-xs font-medium uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
                   Full Name *
                 </label>
                 <input
@@ -227,26 +288,43 @@ export default function AddEmployeePage() {
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
                   placeholder="e.g. Muhammad Usman"
-                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-medium"
+                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm"
                 />
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                  Must be unique across employees
+                </p>
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-2">
-                  Employee ID *
-                </label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-medium uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                    Employee ID *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setEmployeeId(suggestedId)}
+                    className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center gap-1"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    Use {suggestedId}
+                  </button>
+                </div>
                 <input
                   type="text"
                   required
                   value={employeeId}
                   onChange={(e) => setEmployeeId(e.target.value.toUpperCase())}
-                  placeholder="e.g. EMP001"
-                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-bold uppercase"
+                  onBlur={handleEmployeeIdBlur}
+                  placeholder="e.g. EMP 01"
+                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-semibold uppercase"
                 />
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                  Strict format: EMP 01, EMP 02, EMP 03
+                </p>
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-2">
+                <label className="block text-xs font-medium uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
                   Password (Min 6 chars) *
                 </label>
                 <input
@@ -256,14 +334,14 @@ export default function AddEmployeePage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Set login password"
-                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-medium"
+                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm"
                 />
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-white/40 dark:border-slate-700/60">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-white/40 dark:border-white/10">
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-2">
+                <label className="block text-xs font-medium uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
                   Duty Start Time (PKT) *
                 </label>
                 <input
@@ -271,12 +349,12 @@ export default function AddEmployeePage() {
                   required
                   value={dutyStartTime}
                   onChange={(e) => handleDutyStartChange(e.target.value)}
-                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-bold"
+                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-medium"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-2">
+                <label className="block text-xs font-medium uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
                   Duty End Time (PKT) *
                 </label>
                 <input
@@ -284,14 +362,14 @@ export default function AddEmployeePage() {
                   required
                   value={dutyEndTime}
                   onChange={(e) => handleDutyEndChange(e.target.value)}
-                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-bold"
+                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-medium"
                 />
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-4 border-t border-white/40 dark:border-slate-700/60">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-4 border-t border-white/40 dark:border-white/10">
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-2">
+                <label className="block text-xs font-medium uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
                   Basic Salary *
                 </label>
                 <input
@@ -302,15 +380,15 @@ export default function AddEmployeePage() {
                   value={basicSalary}
                   onChange={(e) => handleSalaryChange(e.target.value)}
                   placeholder="e.g. 60000"
-                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-bold"
+                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-medium"
                 />
-                <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400 mt-1">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
                   Monthly basic salary
                 </p>
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-2">
+                <label className="block text-xs font-medium uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
                   Per-Day Deduction *
                 </label>
                 <input
@@ -321,15 +399,15 @@ export default function AddEmployeePage() {
                   value={perDayDeduction}
                   onChange={(e) => handlePerDayDeductionChange(e.target.value)}
                   placeholder="e.g. 2000"
-                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-bold"
+                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-medium"
                 />
-                <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400 mt-1">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
                   Deducted per Unpaid Leave
                 </p>
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-2">
+                <label className="block text-xs font-medium uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
                   Hourly Rate (Short Leave) *
                 </label>
                 <input
@@ -340,15 +418,15 @@ export default function AddEmployeePage() {
                   value={hourlyRate}
                   onChange={(e) => setHourlyRate(e.target.value)}
                   placeholder="Auto-calculated"
-                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-bold"
+                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-medium"
                 />
-                <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400 mt-1">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
                   Deducted per missed hour
                 </p>
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-2">
+                <label className="block text-xs font-medium uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
                   Overtime Rate / Hr *
                 </label>
                 <input
@@ -359,18 +437,20 @@ export default function AddEmployeePage() {
                   value={overtimeRate}
                   onChange={(e) => setOvertimeRate(e.target.value)}
                   placeholder="e.g. 500"
-                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-bold"
+                  className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-medium"
                 />
-                <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400 mt-1">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
                   Added per overtime hour
                 </p>
               </div>
             </div>
 
-            <button
+            <motion.button
+              whileHover={{ scale: 1.01 }}
+              whileTap={{ scale: 0.98 }}
               type="submit"
               disabled={submitting}
-              className="w-full rounded-2xl btn-3d-primary py-3.5 text-sm font-extrabold disabled:opacity-60 flex items-center justify-center gap-2"
+              className="w-full rounded-2xl btn-3d-primary py-3.5 text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2"
             >
               {submitting ? (
                 <>
@@ -380,12 +460,12 @@ export default function AddEmployeePage() {
               ) : (
                 <>
                   <UserPlus className="w-4 h-4" />
-                  Add Employee Immediately
+                  Add Employee ({employeeId || suggestedId})
                 </>
               )}
-            </button>
+            </motion.button>
           </form>
-        </div>
+        </motion.div>
       </div>
     </AdminShell>
   );

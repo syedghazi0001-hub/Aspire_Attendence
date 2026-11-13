@@ -3,14 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
-function createAdminClientFromCloudflare(req: NextRequest) {
-  let cfEnv: Record<string, any> = {};
-  try {
-    const { env } = getCloudflareContext();
-    if (env) cfEnv = env as Record<string, any>;
-  } catch {
-    // Fallback for local dev
-  }
+function createAdminClientFromCloudflare(req: NextRequest, cfEnv: Record<string, any>) {
 
   const supabaseUrl = String(
     cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
@@ -47,7 +40,13 @@ function createAdminClientFromCloudflare(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest, _context: any) {
-  const client = createAdminClientFromCloudflare(req);
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  const client = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
     return NextResponse.json({ attendance: [], records: [] });
   }
@@ -83,10 +82,17 @@ export async function GET(req: NextRequest, _context: any) {
     } else if (monthFilter && /^\d{4}-\d{2}$/.test(monthFilter)) {
       query = query
         .gte("date", `${monthFilter}-01`)
-        .lte("date", `${monthFilter}-31`);
+        .lt("date", new Date(Date.UTC(Number(monthFilter.slice(0, 4)), Number(monthFilter.slice(5, 7)), 1)).toISOString().slice(0, 10));
     }
 
-    const { data, error } = await query;
+    const [{ data, error }, { data: allUsers }] = await Promise.all([
+      query,
+      client
+        .from("users")
+        .select(
+          "id, employee_id, full_name, monthly_salary, basic_salary, per_day_deduction, hourly_rate, overtime_rate, duty_start_time, duty_end_time"
+        ),
+    ]);
 
     if (error) {
       return NextResponse.json(
@@ -95,15 +101,27 @@ export async function GET(req: NextRequest, _context: any) {
       );
     }
 
-    const normalized = (data || []).map((row: Record<string, unknown>) => ({
-      ...row,
-      clock_in: row.clock_in || row.login_time || null,
-      clock_out: row.clock_out || row.logout_time || null,
-      login_time: row.login_time || row.clock_in || null,
-      logout_time: row.logout_time || row.clock_out || null,
-      overtime_hours: Number(row.overtime_hours || 0),
-      missed_hours: Number(row.missed_hours || 0),
-    }));
+    const userMap = new Map<string, Record<string, any>>();
+    (allUsers || []).forEach((u: Record<string, any>) => {
+      if (u && u.id) userMap.set(String(u.id), u);
+    });
+
+    const normalized = (data || []).map((row: Record<string, any>) => {
+      const joinedUser = Array.isArray(row.users) ? row.users[0] : row.users;
+      const resolvedUser =
+        joinedUser || userMap.get(String(row.user_id || "")) || null;
+
+      return {
+        ...row,
+        users: resolvedUser,
+        clock_in: row.clock_in || row.login_time || null,
+        clock_out: row.clock_out || row.logout_time || null,
+        login_time: row.login_time || row.clock_in || null,
+        logout_time: row.logout_time || row.clock_out || null,
+        overtime_hours: Math.max(0, Number(row.overtime_hours || 0)),
+        missed_hours: Math.max(0, Number(row.missed_hours || 0)),
+      };
+    });
 
     return NextResponse.json({
       attendance: normalized,
@@ -117,4 +135,141 @@ export async function GET(req: NextRequest, _context: any) {
       { status: 500 }
     );
   }
+}
+
+/**
+ * POST /api/admin/attendance
+ * Allows Admin to manually add or set Overtime Hours for a specific Employee on a specific Date.
+ * Input: { user_id: string, date: string, overtime_hours: number, mode?: 'set' | 'add' }
+ */
+export async function POST(req: NextRequest, _context: any) {
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  const client = createAdminClientFromCloudflare(req, cfEnv);
+  if (!client) {
+    return NextResponse.json(
+      { error: "Supabase is not configured." },
+      { status: 503 }
+    );
+  }
+
+  try {
+    const body = await req.json();
+    const userId = String(body.user_id || "").trim();
+    const date = String(body.date || "").trim();
+    const inputHours = parseFloat(
+      String(body.overtime_hours ?? body.hours ?? "0")
+    );
+    const mode = body.mode === "add" ? "add" : "set";
+
+    if (!userId || !date) {
+      return NextResponse.json(
+        { error: "Please select an Employee and a Date." },
+        { status: 400 }
+      );
+    }
+
+    if (Number.isNaN(inputHours) || inputHours < 0 || inputHours > 24) {
+      return NextResponse.json(
+        {
+          error:
+            "Please enter valid Overtime Hours between 0 and 24 (e.g., 2 or 2.5).",
+        },
+        { status: 400 }
+      );
+    }
+
+    const { data: existingRow } = await client
+      .from("attendance")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("date", date)
+      .maybeSingle();
+
+    const currentOt = Math.max(0, Number(existingRow?.overtime_hours || 0));
+    const finalOtHours = Math.max(
+      0,
+      Math.round(
+        ((mode === "add" ? currentOt + inputHours : inputHours) +
+          Number.EPSILON) *
+          100
+      ) / 100
+    );
+    const finalOtMinutes = Math.round(finalOtHours * 60);
+
+    let savedRecord: Record<string, any> | null = null;
+
+    if (existingRow) {
+      const { data: updated, error: updateErr } = await client
+        .from("attendance")
+        .update({
+          overtime_hours: finalOtHours,
+          overtime_minutes: finalOtMinutes,
+        })
+        .eq("id", existingRow.id)
+        .select()
+        .single();
+
+      if (updateErr) {
+        return NextResponse.json({ error: updateErr.message }, { status: 500 });
+      }
+      savedRecord = updated;
+    } else {
+      const { data: inserted, error: insertErr } = await client
+        .from("attendance")
+        .upsert(
+          {
+            user_id: userId,
+            date,
+            status: "Present",
+            overtime_hours: finalOtHours,
+            overtime_minutes: finalOtMinutes,
+            missed_hours: 0,
+          },
+          { onConflict: "user_id,date" }
+        )
+        .select()
+        .single();
+
+      if (insertErr) {
+        return NextResponse.json({ error: insertErr.message }, { status: 500 });
+      }
+      savedRecord = inserted;
+    }
+
+    const { data: empRow } = await client
+      .from("users")
+      .select("full_name, employee_id")
+      .eq("id", userId)
+      .maybeSingle();
+
+    const empLabel = empRow
+      ? `${empRow.full_name} (${empRow.employee_id})`
+      : "Employee";
+
+    return NextResponse.json({
+      message: `Manual Overtime of ${finalOtHours.toFixed(
+        2
+      )} hrs saved for ${empLabel} on ${date}.`,
+      record: savedRecord,
+    });
+  } catch (err: unknown) {
+    const message =
+      err instanceof Error ? err.message : "Failed to save manual overtime";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+export async function PUT(req: NextRequest, context: any) {
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  return POST(req, context);
 }

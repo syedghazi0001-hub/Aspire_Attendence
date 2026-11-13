@@ -1,7 +1,10 @@
 /**
  * ============================================================================
- * PAKISTAN STANDARD TIME (PKT — Asia/Karachi, UTC+5) ENGINE, OVERTIME &
- * SHORT LEAVE (EARLY DEPARTURE MISSED HOURS) CALCULATIONS
+ * PAKISTAN STANDARD TIME (PKT — Asia/Karachi, UTC+5) ENGINE &
+ * STRICT OVERTIME CALCULATION
+ * Formula: Overtime = max(0, CheckOutTime - max(DutyEndTime, CheckInTime))
+ * - Arriving early (before DutyStartTime) NEVER counts as overtime.
+ * - Only time worked AFTER DutyEndTime counts as overtime.
  * ============================================================================
  */
 
@@ -89,17 +92,59 @@ export function formatIsoToPktDateTime(
  * Parse a "HH:MM" or "HH:MM:SS" TIME string into minutes since midnight.
  */
 export function parseDutyTimeToMinutes(dutyTimeStr: string): number {
-  const parts = (dutyTimeStr || "09:00").trim().split(":");
-  const h = parseInt(parts[0] || "9", 10);
+  const cleaned = (dutyTimeStr || "09:00").trim();
+  const isPm = /PM/i.test(cleaned);
+  const isAm = /AM/i.test(cleaned);
+  const timeOnly = cleaned.replace(/[AP]M/gi, "").trim();
+  const parts = timeOnly.split(":");
+
+  let h = parseInt(parts[0] || "9", 10);
   const m = parseInt(parts[1] || "0", 10);
   if (Number.isNaN(h) || Number.isNaN(m)) return 9 * 60;
+
+  if (isPm && h < 12) h += 12;
+  if (isAm && h === 12) h = 0;
+
   return h * 60 + m;
+}
+
+/**
+ * Resolves start and end duty minutes on a 24-hour clock.
+ * Prevents the common bug where "09:00" start and "05:00" end (intended as 5:00 PM = 17:00)
+ * was misinterpreted as 5:00 AM the next day (20-hour shift, causing -16h diffs).
+ */
+export function resolveShiftWindowMinutes(
+  dutyStartStr: string,
+  dutyEndStr: string
+): { dutyStartMins: number; dutyEndMins: number } {
+  const dutyStartMins = parseDutyTimeToMinutes(dutyStartStr || "09:00");
+  let dutyEndMins = parseDutyTimeToMinutes(dutyEndStr || "17:00");
+
+  if (dutyEndMins <= dutyStartMins) {
+    // If start is morning/midday (06:00 - 12:59) and end was entered as 01:00 - 08:59 (e.g. 05:00 instead of 17:00),
+    // treat end as PM (+12 hours = 720 mins) rather than next day AM (+24 hours).
+    if (
+      dutyStartMins >= 6 * 60 &&
+      dutyStartMins < 13 * 60 &&
+      dutyEndMins >= 1 * 60 &&
+      dutyEndMins <= 8 * 60
+    ) {
+      dutyEndMins += 12 * 60;
+    } else {
+      // True overnight shift (e.g. 20:00 to 04:00)
+      dutyEndMins += 24 * 60;
+    }
+  }
+
+  return { dutyStartMins, dutyEndMins };
 }
 
 /**
  * Normalize "HH:MM:SS" from Postgres TIME column into "HH:MM" for <input type="time" />.
  */
-export function normalizeTimeInput(dutyTimeStr: string | null | undefined): string {
+export function normalizeTimeInput(
+  dutyTimeStr: string | null | undefined
+): string {
   if (!dutyTimeStr) return "09:00";
   const parts = dutyTimeStr.trim().split(":");
   if (parts.length >= 2) {
@@ -137,19 +182,20 @@ export function calculateShiftDurationHours(
   dutyStartStr: string,
   dutyEndStr: string
 ): number {
-  const startMins = parseDutyTimeToMinutes(dutyStartStr);
-  let endMins = parseDutyTimeToMinutes(dutyEndStr);
-  if (endMins <= startMins) {
-    endMins += 24 * 60;
-  }
-  const diffHours = (endMins - startMins) / 60;
+  const { dutyStartMins, dutyEndMins } = resolveShiftWindowMinutes(
+    dutyStartStr,
+    dutyEndStr
+  );
+  const diffHours = (dutyEndMins - dutyStartMins) / 60;
   return Math.max(0.5, Math.round(diffHours * 100) / 100);
 }
 
 /**
- * Calculate Overtime AND Short Leave (Early Departure Missed Hours) in PKT:
- * - Overtime: Any work done AFTER Duty End Time is counted as Overtime.
- * - Short Leave: If an employee leaves BEFORE Duty End Time, calculate missed hours.
+ * STRICT OVERTIME CALCULATION (PKT):
+ * - Overtime = max(0, CheckOutTime - max(DutyEndTime, CheckInTime))
+ * - Arriving early (before DutyStartTime) does NOT count as overtime.
+ * - Only time worked AFTER DutyEndTime is overtime.
+ * - Never returns negative numbers.
  */
 export function calculateShiftMetricsPkt(
   clockInIso: string,
@@ -162,44 +208,51 @@ export function calculateShiftMetricsPkt(
   missedMinutes: number;
   missedHours: number;
 } {
-  const inInfo = getPktTimeInfo(new Date(clockInIso));
-  const outInfo = getPktTimeInfo(new Date(clockOutIso));
+  const inDate = new Date(clockInIso);
+  const outDate = new Date(clockOutIso);
 
-  const dutyStartMins = parseDutyTimeToMinutes(dutyStartStr);
-  let dutyEndMins = parseDutyTimeToMinutes(dutyEndStr);
-
-  if (dutyEndMins <= dutyStartMins) {
-    dutyEndMins += 24 * 60;
+  if (
+    Number.isNaN(inDate.getTime()) ||
+    Number.isNaN(outDate.getTime()) ||
+    outDate.getTime() <= inDate.getTime()
+  ) {
+    return {
+      overtimeMinutes: 0,
+      overtimeHours: 0,
+      missedMinutes: 0,
+      missedHours: 0,
+    };
   }
 
-  let clockInMins = inInfo.minutesOfDay;
-  let clockOutMins = outInfo.minutesOfDay;
+  const inInfo = getPktTimeInfo(inDate);
+  const outInfo = getPktTimeInfo(outDate);
 
-  if (clockOutMins < clockInMins) {
-    clockOutMins += 24 * 60;
-  }
+  const { dutyEndMins } = resolveShiftWindowMinutes(dutyStartStr, dutyEndStr);
 
-  let overtimeMinutes = 0;
-  let overtimeHours = 0;
-  let missedMinutes = 0;
-  let missedHours = 0;
+  const checkInMins = inInfo.minutesOfDay;
+  // Compute checkOutMins relative to the check-in day in PKT
+  const totalElapsedMins = (outDate.getTime() - inDate.getTime()) / (60 * 1000);
+  const checkOutMins =
+    inInfo.dateStr === outInfo.dateStr
+      ? outInfo.minutesOfDay
+      : checkInMins + Math.max(0, totalElapsedMins);
 
-  if (clockOutMins > dutyEndMins) {
-    const effectiveOvertimeStart = Math.max(dutyEndMins, clockInMins);
-    const rawOvertimeMins = Math.max(0, clockOutMins - effectiveOvertimeStart);
-    overtimeMinutes = Math.round(rawOvertimeMins);
-    overtimeHours = Math.round((overtimeMinutes / 60) * 100) / 100;
-  } else if (clockOutMins < dutyEndMins) {
-    // Employee left early (Short Leave)
-    const rawMissedMins = Math.max(0, dutyEndMins - clockOutMins);
-    missedMinutes = Math.round(rawMissedMins);
-    missedHours = Math.round((missedMinutes / 60) * 100) / 100;
-  }
+  // Formula: Overtime = max(0, CheckOutTime - max(DutyEndTime, CheckInTime))
+  // Arriving early (CheckInTime < DutyStartTime) does not lower DutyEndTime,
+  // so time before DutyStartTime is never counted as overtime.
+  const overtimeStartBaseline = Math.max(dutyEndMins, checkInMins);
+  const rawOvertimeMins = Math.max(0, checkOutMins - overtimeStartBaseline);
+
+  const overtimeMinutes = Math.max(0, Math.round(rawOvertimeMins));
+  const overtimeHours = Math.max(
+    0,
+    Math.round((overtimeMinutes / 60) * 100) / 100
+  );
 
   return {
     overtimeMinutes,
     overtimeHours,
-    missedMinutes,
-    missedHours,
+    missedMinutes: 0,
+    missedHours: 0,
   };
 }

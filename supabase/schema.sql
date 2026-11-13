@@ -42,8 +42,7 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NUL
 -- Ensure Foreign Key to auth.users(id) ON DELETE CASCADE exists safely
 DO $$
 BEGIN
-    DELETE FROM public.users u
-    WHERE NOT EXISTS (SELECT 1 FROM auth.users au WHERE au.id = u.id);
+    -- Preserve existing profiles; NOT VALID below allows legacy orphans to be repaired manually.
 
     IF NOT EXISTS (
         SELECT 1
@@ -54,10 +53,8 @@ BEGIN
     ) THEN
         ALTER TABLE public.users
         ADD CONSTRAINT users_id_fkey
-        FOREIGN KEY (id) REFERENCES auth.users(id) ON DELETE CASCADE;
+        FOREIGN KEY (id) REFERENCES auth.users(id) ON DELETE CASCADE NOT VALID;
     END IF;
-EXCEPTION WHEN OTHERS THEN
-    NULL;
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_users_employee_id ON public.users (employee_id);
@@ -88,9 +85,10 @@ BEGIN
         SPLIT_PART(COALESCE(NEW.email, 'User'), '@', 1)
     );
 
+    PERFORM pg_advisory_xact_lock(724601);
     v_employee_id := UPPER(COALESCE(
         NULLIF(TRIM(NEW.raw_user_meta_data->>'employee_id'), ''),
-        'EMP-' || UPPER(SUBSTRING(REPLACE(NEW.id::TEXT, '-', '') FROM 1 FOR 6))
+        (SELECT 'EMP ' || lpad((COALESCE(MAX(substring(employee_id from '[0-9]+$')::bigint), 0) + 1)::text, GREATEST(2, length((COALESCE(MAX(substring(employee_id from '[0-9]+$')::bigint), 0) + 1)::text)), '0') FROM public.users WHERE employee_id ~ '^EMP [0-9]+$')
     ));
 
     v_role := LOWER(COALESCE(
@@ -173,8 +171,6 @@ BEGIN
         duty_start_time = EXCLUDED.duty_start_time,
         duty_end_time = EXCLUDED.duty_end_time;
 
-    RETURN NEW;
-EXCEPTION WHEN OTHERS THEN
     RETURN NEW;
 END;
 $$;
@@ -545,4 +541,41 @@ GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role, sup
 GRANT ALL ON ALL TABLES IN SCHEMA public TO postgres, anon, authenticated, service_role, supabase_auth_admin;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role, supabase_auth_admin;
 
+NOTIFY pgrst, 'reload schema';
+
+-- v6 upgrade: future writes cannot create negative overtime. Existing records remain
+-- untouched; API and payroll clamp historical negative values for display/payment.
+CREATE OR REPLACE FUNCTION public.guard_attendance_overtime()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+  NEW.overtime_hours := GREATEST(0, COALESCE(NEW.overtime_hours, 0));
+  NEW.overtime_minutes := GREATEST(0, COALESCE(NEW.overtime_minutes, 0));
+  RETURN NEW;
+END; $$;
+DROP TRIGGER IF EXISTS guard_overtime ON public.attendance;
+CREATE TRIGGER guard_overtime BEFORE INSERT OR UPDATE ON public.attendance
+FOR EACH ROW EXECUTE FUNCTION public.guard_attendance_overtime();
+
+-- Serialize employee identity writes to reject concurrent duplicate names/IDs.
+-- Legacy profiles are preserved; validation applies only to new/changed identities.
+CREATE OR REPLACE FUNCTION public.guard_employee_identity()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(724601);
+  IF NEW.role = 'employee' AND (TG_OP = 'INSERT' OR NEW.employee_id IS DISTINCT FROM OLD.employee_id) THEN
+    IF NEW.employee_id !~ '^EMP (0[1-9]|[1-9][0-9]+)$' THEN
+      RAISE EXCEPTION 'Employee ID must follow EMP 01 format' USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  IF TG_OP = 'INSERT' OR NEW.full_name IS DISTINCT FROM OLD.full_name OR NEW.employee_id IS DISTINCT FROM OLD.employee_id THEN
+    IF EXISTS (SELECT 1 FROM public.users u WHERE u.id <> NEW.id AND
+      (lower(regexp_replace(trim(u.full_name), '\s+', ' ', 'g')) = lower(regexp_replace(trim(NEW.full_name), '\s+', ' ', 'g')) OR upper(trim(u.employee_id)) = upper(trim(NEW.employee_id)))) THEN
+      RAISE EXCEPTION 'Duplicate Full Name or Employee ID' USING ERRCODE = '23505';
+    END IF;
+  END IF;
+  RETURN NEW;
+END; $$;
+DROP TRIGGER IF EXISTS guard_employee_identity ON public.users;
+CREATE TRIGGER guard_employee_identity BEFORE INSERT OR UPDATE ON public.users
+FOR EACH ROW EXECUTE FUNCTION public.guard_employee_identity();
 NOTIFY pgrst, 'reload schema';

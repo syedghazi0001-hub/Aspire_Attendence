@@ -5,14 +5,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { calculateDistanceInMeters } from "@/lib/geo";
 import { getPktTimeInfo, calculateShiftMetricsPkt } from "@/lib/pktTime";
 
-function createAdminClientFromCloudflare() {
-  let cfEnv: Record<string, any> = {};
-  try {
-    const { env } = getCloudflareContext();
-    if (env) cfEnv = env as Record<string, any>;
-  } catch {
-    // Fallback for local dev
-  }
+function createAdminClientFromCloudflare(cfEnv: Record<string, any>) {
 
   const supabaseUrl = String(
     cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
@@ -45,7 +38,13 @@ function createAdminClientFromCloudflare() {
 }
 
 export async function POST(req: NextRequest, _context: any) {
-  const client = createAdminClientFromCloudflare();
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  const client = createAdminClientFromCloudflare(cfEnv);
   if (!client) {
     return NextResponse.json(
       { error: "Supabase is not configured." },
@@ -61,7 +60,11 @@ export async function POST(req: NextRequest, _context: any) {
       body.device_id ||
       ""
     ).trim();
-    const qrData = body.qr_data || "";
+    const qrData = String(body.qr_data || "").trim();
+    const intent: "clock_in" | "clock_out" | "auto" =
+      body.intent === "clock_in" || body.intent === "clock_out"
+        ? body.intent
+        : "auto";
     const rawLat = body.lat !== undefined ? body.lat : body.latitude;
     const rawLng = body.lng !== undefined ? body.lng : body.longitude;
 
@@ -122,7 +125,7 @@ export async function POST(req: NextRequest, _context: any) {
       );
     }
 
-    if (!qrData || typeof qrData !== "string" || !qrData.trim()) {
+    if (!qrData) {
       return NextResponse.json(
         {
           error:
@@ -137,13 +140,15 @@ export async function POST(req: NextRequest, _context: any) {
     if (
       rawLat === undefined ||
       rawLng === undefined ||
-      Number.isNaN(empLat) ||
-      Number.isNaN(empLng)
+      rawLat === null ||
+      rawLng === null ||
+      !Number.isFinite(empLat) ||
+      !Number.isFinite(empLng)
     ) {
       return NextResponse.json(
         {
           error:
-            "Unable to retrieve your mobile GPS coordinates. Please enable Location Services.",
+            "Unable to retrieve your GPS coordinates. Please enable High-Accuracy Location Services.",
         },
         { status: 400 }
       );
@@ -155,6 +160,44 @@ export async function POST(req: NextRequest, _context: any) {
       .eq("id", 1)
       .maybeSingle();
 
+    // =========================================================================
+    // 1. DYNAMIC QR CODE VALIDATION (INSTANT INVALIDATION OF OLD QR CODES)
+    // Whenever Admin clicks "Generate New QR Code", a new unique qr_secret is
+    // saved to public.settings. Any old printed or photographed QR code string
+    // no longer matches activeQrSecret and is immediately rejected here.
+    // =========================================================================
+    const activeQrSecret = String(
+      settingsRow?.qr_secret ||
+        settingsRow?.qr_code_string ||
+        "LAB-DEFAULT-QR-SECRET-2026"
+    ).trim();
+
+    let qrMatches = qrData === activeQrSecret;
+    if (!qrMatches && qrData.includes("qr=")) {
+      try {
+        const parsedUrl = new URL(qrData);
+        const paramQr = (parsedUrl.searchParams.get("qr") || "").trim();
+        if (paramQr && paramQr === activeQrSecret) {
+          qrMatches = true;
+        }
+      } catch {
+        // Not a URL
+      }
+    }
+
+    if (!qrMatches) {
+      return NextResponse.json(
+        {
+          error:
+            "Invalid or expired QR Code! The Admin has generated a new workplace QR code, making old QR codes invalid. Please scan the latest QR code.",
+        },
+        { status: 403 }
+      );
+    }
+
+    // =========================================================================
+    // 2. HIGH-PRECISION HAVERSINE GPS DISTANCE ENFORCEMENT (IN METERS)
+    // =========================================================================
     const officeLat = Number(
       settingsRow?.office_lat ??
         settingsRow?.lab_lat ??
@@ -167,8 +210,11 @@ export async function POST(req: NextRequest, _context: any) {
         settingsRow?.lab_longitude ??
         74.18
     );
-    const allowedRadius = Number(
-      settingsRow?.radius_meters ?? settingsRow?.allowed_radius_meters ?? 100
+    const allowedRadius = Math.max(
+      1,
+      Number(
+        settingsRow?.radius_meters ?? settingsRow?.allowed_radius_meters ?? 100
+      )
     );
 
     const distanceMeters = calculateDistanceInMeters(
@@ -178,12 +224,14 @@ export async function POST(req: NextRequest, _context: any) {
       officeLng
     );
 
-    if (distanceMeters > allowedRadius) {
+    if (!Number.isFinite(distanceMeters) || distanceMeters > allowedRadius) {
       return NextResponse.json(
         {
-          error: `You are outside the ${allowedRadius}-meter radius of the workplace (Your distance: ${distanceMeters.toFixed(
-            1
-          )}m). Attendance rejected.`,
+          error: `GPS Boundary Check Failed: You are ${
+            Number.isFinite(distanceMeters)
+              ? `${distanceMeters.toFixed(2)} meters`
+              : "too far"
+          } away from the workplace, which exceeds the Admin's ${allowedRadius}-meter radius limit.`,
           distance_meters: distanceMeters,
           allowed_radius_meters: allowedRadius,
           location_verified: false,
@@ -194,7 +242,6 @@ export async function POST(req: NextRequest, _context: any) {
 
     const dutyStart = userRow.duty_start_time || "09:00:00";
     const dutyEnd = userRow.duty_end_time || "17:00:00";
-
     const pktNow = getPktTimeInfo(new Date());
 
     const { data: existingRecord } = await client
@@ -209,7 +256,43 @@ export async function POST(req: NextRequest, _context: any) {
     const existingClockOut =
       existingRecord?.clock_out || existingRecord?.logout_time || null;
 
+    // Validate explicit Check-In / Check-Out button intent
+    if (intent === "clock_in" && existingClockIn) {
+      return NextResponse.json(
+        {
+          error:
+            "You have already Checked In for today. Please use the 'Check-Out' button when ending your shift.",
+          distance_meters: distanceMeters,
+          record: existingRecord,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (intent === "clock_out" && !existingClockIn) {
+      return NextResponse.json(
+        {
+          error:
+            "You have not Checked In today yet. Please use the 'Check-In' button first.",
+          distance_meters: distanceMeters,
+        },
+        { status: 400 }
+      );
+    }
+
+    // =========================================================================
+    // 3A. CHECK-IN FLOW
+    // =========================================================================
     if (!existingRecord || !existingClockIn) {
+      const preservedManualOtHours = Math.max(
+        0,
+        Number(existingRecord?.overtime_hours || 0)
+      );
+      const preservedManualOtMins = Math.max(
+        0,
+        Number(existingRecord?.overtime_minutes || 0)
+      );
+
       const { data: inserted, error: insertErr } = await client
         .from("attendance")
         .upsert(
@@ -219,7 +302,8 @@ export async function POST(req: NextRequest, _context: any) {
             clock_in: pktNow.isoPkt,
             login_time: pktNow.isoPkt,
             status: "Present",
-            overtime_hours: 0,
+            overtime_hours: preservedManualOtHours,
+            overtime_minutes: preservedManualOtMins,
             missed_hours: 0,
           },
           { onConflict: "user_id,date" }
@@ -233,9 +317,9 @@ export async function POST(req: NextRequest, _context: any) {
 
       return NextResponse.json({
         action: "clock_in",
-        message: `Clock In recorded at ${pktNow.displayTime} PKT (Distance: ${distanceMeters.toFixed(
-          1
-        )}m <= ${allowedRadius}m).`,
+        message: `Check-In verified at ${pktNow.displayTime} (GPS Distance: ${distanceMeters.toFixed(
+          2
+        )}m / ${allowedRadius}m limit).`,
         distance_meters: distanceMeters,
         allowed_radius_meters: allowedRadius,
         record: {
@@ -244,27 +328,45 @@ export async function POST(req: NextRequest, _context: any) {
           login_time: inserted.login_time || pktNow.isoPkt,
           clock_out: null,
           logout_time: null,
+          overtime_hours: Math.max(0, Number(inserted.overtime_hours || 0)),
         },
       });
     }
 
+    // =========================================================================
+    // 3B. CHECK-OUT FLOW
+    // Overtime = max(0, CheckOutTime - max(DutyEndTime, CheckInTime))
+    // =========================================================================
     if (!existingClockOut) {
-      const { overtimeMinutes, overtimeHours, missedHours } =
-        calculateShiftMetricsPkt(
-          existingClockIn,
-          pktNow.isoPkt,
-          dutyStart,
-          dutyEnd
-        );
+      const { overtimeMinutes, overtimeHours } = calculateShiftMetricsPkt(
+        existingClockIn,
+        pktNow.isoPkt,
+        dutyStart,
+        dutyEnd
+      );
+
+      // Keep whichever is greater or add manual overtime if Admin already granted manual OT today
+      const existingManualOtHours = Math.max(
+        0,
+        Number(existingRecord?.overtime_hours || 0)
+      );
+      const finalOvertimeHours = Math.max(
+        0,
+        Math.round((overtimeHours + existingManualOtHours) * 100) / 100
+      );
+      const finalOvertimeMinutes = Math.max(
+        0,
+        Math.round(finalOvertimeHours * 60)
+      );
 
       const { data: updated, error: updateErr } = await client
         .from("attendance")
         .update({
           clock_out: pktNow.isoPkt,
           logout_time: pktNow.isoPkt,
-          overtime_minutes: overtimeMinutes,
-          overtime_hours: overtimeHours,
-          missed_hours: missedHours,
+          overtime_minutes: finalOvertimeMinutes,
+          overtime_hours: finalOvertimeHours,
+          missed_hours: 0,
         })
         .eq("id", existingRecord.id)
         .select()
@@ -274,40 +376,28 @@ export async function POST(req: NextRequest, _context: any) {
         return NextResponse.json({ error: updateErr.message }, { status: 500 });
       }
 
-      if (missedHours > 0) {
-        await client.from("leaves").upsert(
-          {
-            user_id: userRow.id,
-            date: pktNow.dateStr,
-            leave_type: "short",
-            hours_missed: missedHours,
-            reason: "Early clock-out before duty end time (auto-recorded)",
-            status: "approved",
-          },
-          { onConflict: "user_id,date" }
-        );
-      }
-
-      let summarySuffix = " | Shift Completed";
-      if (overtimeHours > 0) {
-        summarySuffix = ` | Overtime: ${overtimeHours} hrs (${overtimeMinutes} mins)`;
-      } else if (missedHours > 0) {
-        summarySuffix = ` | Short Leave: ${missedHours} hrs missed`;
-      }
+      const summarySuffix =
+        finalOvertimeHours > 0
+          ? ` | Overtime: +${finalOvertimeHours.toFixed(2)} hrs (${overtimeMinutes} mins after duty end)`
+          : " | Shift Completed (0.00 hrs Overtime)";
 
       return NextResponse.json({
         action: "clock_out",
-        message: `Clock Out recorded at ${pktNow.displayTime} PKT${summarySuffix}.`,
+        message: `Check-Out verified at ${pktNow.displayTime} (GPS: ${distanceMeters.toFixed(
+          2
+        )}m)${summarySuffix}.`,
         distance_meters: distanceMeters,
         allowed_radius_meters: allowedRadius,
-        overtime_hours: overtimeHours,
-        missed_hours: missedHours,
+        overtime_hours: finalOvertimeHours,
+        missed_hours: 0,
         record: {
           ...updated,
           clock_in: updated.clock_in || existingClockIn,
           login_time: updated.login_time || existingClockIn,
           clock_out: updated.clock_out || pktNow.isoPkt,
           logout_time: updated.logout_time || pktNow.isoPkt,
+          overtime_hours: finalOvertimeHours,
+          missed_hours: 0,
         },
       });
     }
@@ -316,7 +406,7 @@ export async function POST(req: NextRequest, _context: any) {
       {
         action: "already_completed",
         error:
-          "You have already completed both Clock In and Clock Out for today (PKT).",
+          "You have already completed both Check-In and Check-Out for today (PKT).",
         distance_meters: distanceMeters,
         record: {
           ...existingRecord,
@@ -324,6 +414,10 @@ export async function POST(req: NextRequest, _context: any) {
           login_time: existingClockIn,
           clock_out: existingClockOut,
           logout_time: existingClockOut,
+          overtime_hours: Math.max(
+            0,
+            Number(existingRecord.overtime_hours || 0)
+          ),
         },
       },
       { status: 400 }

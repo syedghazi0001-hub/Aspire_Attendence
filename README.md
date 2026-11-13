@@ -1,4 +1,4 @@
-# PulseHR Cloud v5.0 — Attendance, Device Lock & Payroll Portal
+# PulseHR Cloud v6.0 — Attendance, Device Lock & Payroll Portal
 
 **Tech Stack:** Next.js 15 (App Router) • Supabase (PostgreSQL + Auth) • Cloudflare Workers (`@opennextjs/cloudflare`) • Tailwind CSS • Framer Motion (Apple Keynote 3D Glassmorphism UI)
 
@@ -27,9 +27,9 @@
 2. Enter your Admin Email (e.g., `admin@company.com`), Password, check **Auto Confirm User**, and click **Create User**.
 3. If you want to explicitly mark your account as `admin` in `public.users`, run this in the **SQL Editor**:
    ```sql
-   UPDATE public.users SET role = 'admin' WHERE employee_id LIKE 'EMP-%';
+   UPDATE public.users SET role = 'admin' WHERE id = (SELECT id FROM auth.users WHERE email = 'admin@company.com');
    ```
-   *(Any email login that is not an employee record is also automatically treated as an Admin).*
+   Use your own administrator email in the SQL above.
 
 ---
 
@@ -40,7 +40,7 @@ Open a terminal inside the extracted project folder and run:
 ```bash
 git init
 git add .
-git commit -m "Initial commit: PulseHR Cloud v5.0 Next.js 15 + Supabase + Cloudflare Workers"
+git commit -m "Initial commit: PulseHR Cloud v6.0 Next.js 15 + Supabase + Cloudflare Workers"
 git branch -M main
 git remote add origin https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME.git
 git push -u origin main
@@ -90,3 +90,28 @@ npm run deploy
    npm run dev
    ```
 4. Open [http://localhost:3000](http://localhost:3000).
+
+
+## v6 changes and verification
+
+- Employee tabs: Check-In, Check-Out, Apply for Leave, optional Reason, and live leave-history status.
+- Admin: named/identified leave review cards on the dashboard and four leave-ledger tabs; approve Paid/Unpaid or Reject.
+- Manual overtime: dashboard modal accepts Employee, PKT Date, Hours. Saving **sets/replaces** that date's stored overtime total. If entered before check-out, those hours are treated as a manual adjustment and added to the automatic overtime at check-out. For a final total correction, save after check-out.
+- Overtime uses max(0, CheckOut - max(DutyEnd, CheckIn)); negative historical values are clamped in the API and payroll. Early arrival adds no overtime. Overnight scheduled shifts are supported by the calculation helper.
+- GPS uses unrounded Haversine meters (mean Earth radius 6,371,008.8m), with an exact distance <= radius test and no extra tolerance. Radius accepts 1m, 10m, 100m, etc. GPS device accuracy is not guaranteed: a strict 1m geofence can reject legitimate users whose phone location is imprecise.
+- Generate New QR Code rotates the saved settings token; subsequent scans of older tokens are rejected. Static-vs-dynamic architecture is documented in QrGeneratorCard.tsx. QR rotation is manual, not timed auto-rotation.
+- IDs use EMP 01, EMP 02, through EMP 100 and beyond. The next ID is suggested; duplicate names (case/whitespace-insensitive) and IDs are rejected. Existing legacy IDs/profiles are not bulk-renamed.
+- Glass/crystal UI, lightweight typography, dark neutral surfaces, and Framer Motion transitions/modal animations.
+
+### Upgrade
+1. Back up your database and run the entire `supabase/schema.sql` in SQL Editor.
+2. Configure public Supabase URL/key for the frontend build and Worker runtime. Keep the service-role key as a **server-only Worker secret**, never a NEXT_PUBLIC variable.
+3. Install with `npm ci --legacy-peer-deps`, then run `npx @opennextjs/cloudflare build` and deploy with Wrangler.
+4. Existing data is not deleted by the schema. Legacy orphan profiles are retained; repair them before validating the added Auth FK. Duplicate legacy identities are preserved, but new duplicate writes are rejected.
+
+### Checks included
+- `node tests/regression.cjs`: 19 assertions for daytime/overnight overtime, the reported 12:51–12:59 case, strict sub-meter radius boundaries, invalid coordinates, and employee IDs.
+- `npx tsc --noEmit`: TypeScript check.
+- `npx @opennextjs/cloudflare build`: Next.js compilation plus Cloudflare Worker packaging.
+
+These are local build/regression checks, not a live Supabase/phone acceptance test. Before production, verify QR rotation, leave approval, employee creation/deletion, and two-device session approval using your own configured database. Review inherited broad RLS policies/API authorization before exposing the application publicly; this feature update is not a security audit.

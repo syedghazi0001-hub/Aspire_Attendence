@@ -2,17 +2,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
-import { employeeIdToAuthEmail } from "@/lib/geo";
+import { employeeIdToAuthEmail, normalizeEmployeeIdFormat } from "@/lib/geo";
 import { getPktTimeInfo } from "@/lib/pktTime";
 
-function createClientsFromCloudflare() {
-  let cfEnv: Record<string, any> = {};
-  try {
-    const { env } = getCloudflareContext();
-    if (env) cfEnv = env as Record<string, any>;
-  } catch {
-    // Fallback for local dev
-  }
+function createClientsFromCloudflare(cfEnv: Record<string, any>) {
 
   const supabaseUrl = String(
     cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
@@ -109,8 +102,14 @@ function formatCleanDeviceInfo(rawInfo: string, userAgent: string): string {
 }
 
 export async function POST(req: NextRequest, _context: any) {
+  let cfEnv: Record<string, any> = {};
   try {
-    const { client, anonClient } = createClientsFromCloudflare();
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  try {
+    const { client, anonClient } = createClientsFromCloudflare(cfEnv);
     if (!client || !anonClient) {
       return NextResponse.json(
         {
@@ -142,18 +141,34 @@ export async function POST(req: NextRequest, _context: any) {
     }
 
     const isEmailInput = rawIdentifier.includes("@");
-    const normalizedEmpId = rawIdentifier.toUpperCase();
-    const loginEmail = isEmailInput
-      ? rawIdentifier.toLowerCase()
-      : employeeIdToAuthEmail(normalizedEmpId);
+    const canonicalEmpId = normalizeEmployeeIdFormat(rawIdentifier);
+    const rawUpperEmpId = rawIdentifier.toUpperCase();
 
-    const { data: authData, error: authErr } =
-      await anonClient.auth.signInWithPassword({
-        email: loginEmail,
-        password,
-      });
+    const candidateEmails: string[] = [];
+    if (isEmailInput) {
+      candidateEmails.push(rawIdentifier.toLowerCase());
+    } else {
+      candidateEmails.push(employeeIdToAuthEmail(canonicalEmpId));
+      const rawEmail = employeeIdToAuthEmail(rawUpperEmpId);
+      if (!candidateEmails.includes(rawEmail)) {
+        candidateEmails.push(rawEmail);
+      }
+    }
 
-    if (authErr || !authData?.user) {
+    let authUser: any = null;
+    for (const emailCandidate of candidateEmails) {
+      const { data: authData, error: authErr } =
+        await anonClient.auth.signInWithPassword({
+          email: emailCandidate,
+          password,
+        });
+      if (!authErr && authData?.user) {
+        authUser = authData.user;
+        break;
+      }
+    }
+
+    if (!authUser) {
       return NextResponse.json(
         {
           error: "Invalid credentials. Please check your ID/Email and Password.",
@@ -165,14 +180,17 @@ export async function POST(req: NextRequest, _context: any) {
     let { data: userRecord } = await client
       .from("users")
       .select("*")
-      .eq("id", authData.user.id)
+      .eq("id", authUser.id)
       .maybeSingle();
 
     if (!userRecord && !isEmailInput) {
       const { data: byEmpId } = await client
         .from("users")
         .select("*")
-        .ilike("employee_id", normalizedEmpId)
+        .or(
+          `employee_id.ilike.${canonicalEmpId},employee_id.ilike.${rawUpperEmpId}`
+        )
+        .limit(1)
         .maybeSingle();
       userRecord = byEmpId;
     }

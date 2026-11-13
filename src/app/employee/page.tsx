@@ -83,6 +83,9 @@ export default function EmployeePortalPage() {
     message: string;
   } | null>(null);
 
+  const [activeTab, setActiveTab] = useState<"clock_in" | "clock_out" | "leave">("clock_in");
+  const [leaveHistory, setLeaveHistory] = useState<any[]>([]);
+
   // Leave Application State
   const [leaveType, setLeaveType] = useState<"paid" | "unpaid" | "short">(
     "paid"
@@ -200,6 +203,14 @@ export default function EmployeePortalPage() {
     return () => clearInterval(interval);
   }, [sessionToken, fingerprint, employee?.id, verifySessionStatus]);
 
+  useEffect(() => {
+    if (!employee || !sessionToken || activeTab !== "leave") return;
+    const load = () => fetch(`/api/employee/leave?user_id=${encodeURIComponent(employee.id)}&session_token=${encodeURIComponent(sessionToken)}&fp=${encodeURIComponent(fingerprint)}`, { cache: "no-store" }).then(r => r.json()).then(d => setLeaveHistory(d.leaves || [])).catch(() => null);
+    load();
+    const timer = setInterval(load, 5000);
+    return () => clearInterval(timer);
+  }, [employee?.id, sessionToken, fingerprint, activeTab]);
+
   const handleRequestLogout = async () => {
     if (!sessionToken || !employee) return;
     setRequestingLogout(true);
@@ -252,10 +263,10 @@ export default function EmployeePortalPage() {
     if (!employee) return;
     setLeaveMessage(null);
 
-    if (!leaveDate || !leaveReason.trim()) {
+    if (!leaveDate) {
       setLeaveMessage({
         type: "error",
-        text: "Please select a Date and enter a Reason for your leave.",
+        text: "Please select a Date for your leave.",
       });
       return;
     }
@@ -266,6 +277,8 @@ export default function EmployeePortalPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          session_token: sessionToken,
+          device_fingerprint: fingerprint,
           user_id: employee.id,
           leave_type: leaveType,
           date: leaveDate,
@@ -326,6 +339,7 @@ export default function EmployeePortalPage() {
                 session_token: sessionToken,
                 device_id: fingerprint,
                 device_fingerprint: fingerprint,
+                intent: activeTab === "clock_out" ? "clock_out" : "clock_in",
                 qr_data: decodedQrText,
                 lat: position.coords.latitude,
                 lng: position.coords.longitude,
@@ -399,7 +413,7 @@ export default function EmployeePortalPage() {
         }
       );
     },
-    [sessionToken, employee, fingerprint, clearLocalSessionAndRedirect]
+    [activeTab, sessionToken, employee, fingerprint, clearLocalSessionAndRedirect]
   );
 
   if (approvalStatus === "checking" || !employee) {
@@ -445,7 +459,7 @@ export default function EmployeePortalPage() {
               />
             </div>
             <div>
-              <h1 className="text-base font-extrabold text-slate-800 dark:text-white leading-tight">
+              <h1 className="text-base font-medium text-slate-800 dark:text-white leading-tight">
                 {employee.full_name}
               </h1>
               <p className="text-xs font-semibold text-indigo-700 dark:text-indigo-300">
@@ -469,7 +483,7 @@ export default function EmployeePortalPage() {
                 disabled={
                   requestingLogout || approvalStatus === "pending_logout"
                 }
-                className={`rounded-xl px-3.5 py-2 text-xs font-extrabold inline-flex items-center gap-1.5 ${
+                className={`rounded-xl px-3.5 py-2 text-xs font-medium inline-flex items-center gap-1.5 ${
                   approvalStatus === "pending_logout"
                     ? "btn-3d-glass opacity-75 cursor-not-allowed"
                     : "btn-3d-amber"
@@ -504,7 +518,7 @@ export default function EmployeePortalPage() {
               <div className="w-16 h-16 rounded-2xl btn-3d-amber flex items-center justify-center mx-auto">
                 <Hourglass className="w-8 h-8 animate-pulse" />
               </div>
-              <h2 className="text-xl font-extrabold text-slate-800 dark:text-white">
+              <h2 className="text-xl font-medium text-slate-800 dark:text-white">
                 Approval Pending
               </h2>
               <p className="text-sm font-medium text-slate-700 dark:text-slate-200 leading-relaxed">
@@ -524,7 +538,7 @@ export default function EmployeePortalPage() {
               <div className="w-16 h-16 rounded-2xl btn-3d-rose flex items-center justify-center mx-auto">
                 <ShieldAlert className="w-8 h-8" />
               </div>
-              <h2 className="text-lg font-extrabold text-rose-700 dark:text-rose-300">
+              <h2 className="text-lg font-medium text-rose-700 dark:text-rose-300">
                 Login Request Declined
               </h2>
               <p className="text-xs font-medium text-slate-600 dark:text-slate-300 leading-relaxed">
@@ -532,7 +546,7 @@ export default function EmployeePortalPage() {
               </p>
               <button
                 onClick={clearLocalSessionAndRedirect}
-                className="rounded-2xl btn-3d-glass px-5 py-2.5 text-xs font-bold"
+                className="rounded-2xl btn-3d-glass px-5 py-2.5 text-xs font-medium"
               >
                 Back to Sign In
               </button>
@@ -542,15 +556,18 @@ export default function EmployeePortalPage() {
           {/* Active Approved Employee Dashboard */}
           {(approvalStatus === "approved" ||
             approvalStatus === "pending_logout") && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="space-y-5">
+              <nav className="glass-panel rounded-3xl p-3 flex flex-wrap gap-3" aria-label="Employee actions">
+                {([['clock_in', 'Check-In'], ['clock_out', 'Check-Out'], ['leave', 'Apply for Leave']] as const).map(([tab, label]) => <button key={tab} onClick={() => setActiveTab(tab)} aria-pressed={activeTab === tab} className={`rounded-2xl px-5 py-3 text-sm ${activeTab === tab ? 'btn-3d-primary' : 'btn-3d-glass'}`}>{label}</button>)}
+              </nav>
               {/* Left Card: Attendance & QR Scanner */}
-              <div className="glass-panel rounded-3xl p-6 sm:p-7 flex flex-col justify-between space-y-5">
+              <div className={`glass-panel rounded-3xl p-6 sm:p-7 flex flex-col justify-between space-y-5 ${activeTab === "leave" ? "hidden" : ""}`}>
                 <div className="space-y-5">
                   {approvalStatus === "pending_logout" && (
                     <div className="glass-card-3d rounded-2xl p-4 flex items-start gap-3">
                       <Hourglass className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5 animate-pulse" />
                       <div className="text-xs">
-                        <h3 className="font-extrabold text-slate-800 dark:text-white">
+                        <h3 className="font-medium text-slate-800 dark:text-white">
                           Logout Request Pending
                         </h3>
                         <p className="font-medium text-slate-600 dark:text-slate-300 mt-0.5 leading-relaxed">
@@ -562,7 +579,7 @@ export default function EmployeePortalPage() {
                   )}
 
                   <div className="flex items-center justify-between rounded-2xl glass-card-3d px-4 py-3 text-xs">
-                    <span className="inline-flex items-center gap-1.5 font-extrabold text-emerald-700 dark:text-emerald-300">
+                    <span className="inline-flex items-center gap-1.5 font-medium text-emerald-700 dark:text-emerald-300">
                       <Smartphone className="w-4 h-4" />
                       Active Device Verified
                     </span>
@@ -573,12 +590,12 @@ export default function EmployeePortalPage() {
 
                   <div className="glass-card-3d rounded-2xl p-5">
                     <div className="flex items-center justify-between mb-4">
-                      <span className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                      <span className="text-xs font-medium uppercase tracking-wider text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
                         <Clock className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
                         Today&apos;s Attendance
                       </span>
                       <span
-                        className={`text-xs font-bold px-3 py-1 rounded-full ${
+                        className={`text-xs font-medium px-3 py-1 rounded-full ${
                           clockOutVal
                             ? "bg-emerald-500/20 text-emerald-800 dark:text-emerald-200"
                             : clockInVal
@@ -599,7 +616,7 @@ export default function EmployeePortalPage() {
                         <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 block">
                           Clock In
                         </span>
-                        <span className="text-sm font-extrabold text-slate-800 dark:text-white mt-0.5 block">
+                        <span className="text-sm font-medium text-slate-800 dark:text-white mt-0.5 block">
                           {formatPktTime12h(clockInVal)}
                         </span>
                       </div>
@@ -607,7 +624,7 @@ export default function EmployeePortalPage() {
                         <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 block">
                           Clock Out
                         </span>
-                        <span className="text-sm font-extrabold text-slate-800 dark:text-white mt-0.5 block">
+                        <span className="text-sm font-medium text-slate-800 dark:text-white mt-0.5 block">
                           {formatPktTime12h(clockOutVal)}
                         </span>
                       </div>
@@ -615,7 +632,7 @@ export default function EmployeePortalPage() {
 
                     {(Number(todayRecord?.overtime_hours || 0) > 0 ||
                       Number(todayRecord?.missed_hours || 0) > 0) && (
-                      <div className="mt-3.5 pt-3 border-t border-white/40 dark:border-slate-700/60 space-y-1 text-center text-xs font-bold">
+                      <div className="mt-3.5 pt-3 border-t border-white/40 dark:border-slate-700/60 space-y-1 text-center text-xs font-medium">
                         {Number(todayRecord?.overtime_hours || 0) > 0 && (
                           <div className="text-indigo-700 dark:text-indigo-300">
                             Overtime Recorded:{" "}
@@ -652,7 +669,7 @@ export default function EmployeePortalPage() {
                           <AlertCircle className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
                         )}
                         <div className="text-xs">
-                          <h3 className="font-extrabold">{feedback.title}</h3>
+                          <h3 className="font-medium">{feedback.title}</h3>
                           <p className="mt-0.5 font-medium leading-relaxed">
                             {feedback.message}
                           </p>
@@ -670,8 +687,8 @@ export default function EmployeePortalPage() {
                     setFeedback(null);
                     setScannerOpen(true);
                   }}
-                  disabled={processingScan || Boolean(clockOutVal)}
-                  className="w-full rounded-2xl btn-3d-primary disabled:opacity-50 py-4 px-6 text-sm sm:text-base font-extrabold flex items-center justify-center gap-3"
+                  disabled={processingScan || Boolean(clockOutVal) || (activeTab === "clock_in" ? Boolean(clockInVal) : !clockInVal)}
+                  className="w-full rounded-2xl btn-3d-primary disabled:opacity-50 py-4 px-6 text-sm sm:text-base font-medium flex items-center justify-center gap-3"
                 >
                   {processingScan ? (
                     <>
@@ -687,9 +704,7 @@ export default function EmployeePortalPage() {
                     <>
                       <QrCode className="w-5 h-5" />
                       <span>
-                        {clockInVal
-                          ? "Scan QR to Clock Out"
-                          : "Scan QR to Clock In"}
+                        {activeTab === "clock_out" ? "Scan QR to Check-Out" : "Scan QR to Check-In"}
                       </span>
                     </>
                   )}
@@ -697,14 +712,14 @@ export default function EmployeePortalPage() {
               </div>
 
               {/* Right Card: Apply for Leave Form */}
-              <div className="glass-panel rounded-3xl p-6 sm:p-7 flex flex-col justify-between">
+              <div className={`glass-panel rounded-3xl p-6 sm:p-7 flex flex-col justify-between ${activeTab !== "leave" ? "hidden" : ""}`}>
                 <div>
                   <div className="flex items-center gap-2.5 mb-5">
                     <div className="p-2.5 rounded-2xl btn-3d-primary">
                       <CalendarPlus className="w-5 h-5" />
                     </div>
                     <div>
-                      <h2 className="text-base font-extrabold text-slate-800 dark:text-white">
+                      <h2 className="text-base font-medium text-slate-800 dark:text-white">
                         Apply for Leave
                       </h2>
                       <p className="text-xs text-slate-600 dark:text-slate-300">
@@ -721,7 +736,7 @@ export default function EmployeePortalPage() {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -6 }}
                         role="alert"
-                        className={`mb-4 rounded-2xl p-3.5 text-xs font-bold flex items-center gap-2.5 ${
+                        className={`mb-4 rounded-2xl p-3.5 text-xs font-medium flex items-center gap-2.5 ${
                           leaveMessage.type === "success"
                             ? "bg-emerald-500/15 border border-emerald-400/40 text-emerald-900 dark:text-emerald-200"
                             : "bg-rose-500/15 border border-rose-400/40 text-rose-900 dark:text-rose-200"
@@ -739,7 +754,7 @@ export default function EmployeePortalPage() {
 
                   <form onSubmit={handleApplyLeave} className="space-y-4">
                     <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
+                      <label className="block text-xs font-medium uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
                         Leave Type
                       </label>
                       <select
@@ -758,7 +773,7 @@ export default function EmployeePortalPage() {
                     </div>
 
                     <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
+                      <label className="block text-xs font-medium uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
                         Date
                       </label>
                       <input
@@ -771,12 +786,11 @@ export default function EmployeePortalPage() {
                     </div>
 
                     <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
-                        Reason
+                      <label className="block text-xs font-medium uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
+                        Reason (Optional)
                       </label>
                       <textarea
                         rows={3}
-                        required
                         value={leaveReason}
                         onChange={(e) => setLeaveReason(e.target.value)}
                         placeholder="Briefly describe the reason for your leave..."
@@ -789,7 +803,7 @@ export default function EmployeePortalPage() {
                       whileTap={{ scale: 0.98 }}
                       type="submit"
                       disabled={submittingLeave}
-                      className="w-full rounded-2xl btn-3d-emerald py-3.5 px-5 text-sm font-extrabold flex items-center justify-center gap-2"
+                      className="w-full rounded-2xl btn-3d-emerald py-3.5 px-5 text-sm font-medium flex items-center justify-center gap-2"
                     >
                       {submittingLeave ? (
                         <>
@@ -804,6 +818,7 @@ export default function EmployeePortalPage() {
                       )}
                     </motion.button>
                   </form>
+                  <section className="mt-6 space-y-3"><h3 className="text-base font-medium">Your Leave History</h3>{leaveHistory.length === 0 ? <p className="text-sm text-slate-500">No applications yet.</p> : leaveHistory.map(l => <div key={l.id} className="glass-card-3d rounded-2xl p-4 text-sm flex flex-wrap justify-between gap-2"><span>{l.date} · {l.leave_category || l.leave_type}</span><span className="capitalize">{l.status} · {l.is_paid ? 'Paid' : l.leave_type === 'short' ? 'Short / hourly' : 'Unpaid'}</span></div>)}</section>
                 </div>
               </div>
             </div>

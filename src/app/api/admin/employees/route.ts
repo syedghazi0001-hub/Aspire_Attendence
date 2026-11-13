@@ -2,19 +2,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
-import { employeeIdToAuthEmail } from "@/lib/geo";
+import {
+  employeeIdToAuthEmail,
+  STRICT_EMPLOYEE_ID_REGEX,
+  normalizeEmployeeIdFormat,
+  computeNextEmployeeId,
+} from "@/lib/geo";
 import { calculateShiftDurationHours } from "@/lib/pktTime";
 
-function createPerRequestSupabaseAdmin(req: NextRequest) {
-  let cfEnv: Record<string, any> = {};
-  try {
-    const { env } = getCloudflareContext();
-    if (env) {
-      cfEnv = env as Record<string, any>;
-    }
-  } catch {
-    // Local dev fallback if outside Cloudflare context
-  }
+function createPerRequestSupabaseAdmin(req: NextRequest, cfEnv: Record<string, any>) {
 
   const supabaseUrl = String(
     cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
@@ -80,14 +76,21 @@ function createPerRequestSupabaseAdmin(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest, _context: any) {
+  let cfEnv: Record<string, any> = {};
   try {
-    const { supabaseAdmin } = createPerRequestSupabaseAdmin(req);
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  try {
+    const { supabaseAdmin } = createPerRequestSupabaseAdmin(req, cfEnv);
     if (!supabaseAdmin) {
       return NextResponse.json(
         {
           error:
             "Supabase is not configured in Cloudflare Worker environment.",
           employees: [],
+          next_employee_id: "EMP 01",
         },
         { status: 503 }
       );
@@ -97,30 +100,49 @@ export async function GET(req: NextRequest, _context: any) {
       .from("users")
       .select("*")
       .eq("role", "employee")
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: true });
 
     if (error) {
       return NextResponse.json(
         {
           error: `Database Read Error (${error.code || "RLS"}): ${error.message}`,
           employees: [],
+          next_employee_id: "EMP 01",
         },
         { status: 500 }
       );
     }
 
-    return NextResponse.json({ employees: data || [] });
+    const employees = data || [];
+    const existingIds = employees.map((emp: any) =>
+      String(emp.employee_id || "")
+    );
+    const nextEmployeeId = computeNextEmployeeId(existingIds);
+
+    return NextResponse.json({
+      employees,
+      next_employee_id: nextEmployeeId,
+    });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Failed to load employees";
-    return NextResponse.json({ error: msg, employees: [] }, { status: 500 });
+    return NextResponse.json(
+      { error: msg, employees: [], next_employee_id: "EMP 01" },
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(req: NextRequest, _context: any) {
+  let cfEnv: Record<string, any> = {};
+  try {
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
   try {
     // 1. Get Cloudflare Worker environment via getCloudflareContext() & create per-request client
     const { supabaseAdmin, anonClient, hasServiceRole } =
-      createPerRequestSupabaseAdmin(req);
+      createPerRequestSupabaseAdmin(req, cfEnv);
 
     if (!supabaseAdmin || !anonClient) {
       return NextResponse.json(
@@ -133,9 +155,45 @@ export async function POST(req: NextRequest, _context: any) {
     }
 
     const body = await req.json();
-    const fullName = (body.full_name || "").trim();
-    const employeeId = (body.employee_id || "").trim().toUpperCase();
-    const password = (body.password || "").trim();
+    const fullName = String(body.full_name || "")
+      .trim()
+      .replace(/\s+/g, " ");
+    const rawEmpId = String(body.employee_id || "")
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, " ");
+    const employeeId = normalizeEmployeeIdFormat(rawEmpId);
+    const password = String(body.password || "").trim();
+
+    if (!fullName || !employeeId || !password) {
+      return NextResponse.json(
+        {
+          error:
+            "All fields are required: Please provide Full Name, Employee ID, and Password.",
+        },
+        { status: 400 }
+      );
+    }
+
+    // Strict Employee ID Pattern Validation: "EMP 01", "EMP 02", "EMP 03", etc.
+    if (!STRICT_EMPLOYEE_ID_REGEX.test(employeeId)) {
+      return NextResponse.json(
+        {
+          error: `Invalid Employee ID format ('${rawEmpId}'). Must follow strict pattern: 'EMP 01', 'EMP 02', 'EMP 03', etc.`,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (password.length < 6) {
+      return NextResponse.json(
+        {
+          error:
+            "Password must be at least 6 characters long (Supabase Auth requirement).",
+        },
+        { status: 400 }
+      );
+    }
 
     const monthlySalary =
       parseFloat(String(body.monthly_salary ?? body.basic_salary ?? "0")) || 0;
@@ -158,32 +216,10 @@ export async function POST(req: NextRequest, _context: any) {
         ? parseFloat(String(body.overtime_rate)) || 0
         : hourlyRate;
 
-    if (!fullName || !employeeId || !password) {
-      return NextResponse.json(
-        {
-          error:
-            "All fields are required: Please provide Full Name, Employee ID, and Password.",
-        },
-        { status: 400 }
-      );
-    }
-
-    if (password.length < 6) {
-      return NextResponse.json(
-        {
-          error:
-            "Password must be at least 6 characters long (Supabase Auth requirement).",
-        },
-        { status: 400 }
-      );
-    }
-
-    // Check if Employee ID already exists in `public.users`
-    const { data: existingRow, error: checkError } = await supabaseAdmin
+    // Check against ALL existing employees for duplicate ID OR duplicate Full Name
+    const { data: existingEmployees, error: checkError } = await supabaseAdmin
       .from("users")
-      .select("id, employee_id")
-      .ilike("employee_id", employeeId)
-      .maybeSingle();
+      .select("id, employee_id, full_name");
 
     if (checkError) {
       return NextResponse.json(
@@ -194,10 +230,37 @@ export async function POST(req: NextRequest, _context: any) {
       );
     }
 
-    if (existingRow) {
+    const allRows = existingEmployees || [];
+
+    const duplicateIdRow = allRows.find(
+      (r: any) =>
+        normalizeEmployeeIdFormat(String(r.employee_id || "")) === employeeId ||
+        String(r.employee_id || "")
+          .trim()
+          .toUpperCase() === employeeId
+    );
+
+    if (duplicateIdRow) {
       return NextResponse.json(
         {
-          error: `Duplicate Employee ID: '${employeeId}' already exists.`,
+          error: `Duplicate Employee ID: '${employeeId}' is already assigned to ${duplicateIdRow.full_name}.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    const duplicateNameRow = allRows.find(
+      (r: any) =>
+        String(r.full_name || "")
+          .trim()
+          .replace(/\s+/g, " ")
+          .toLowerCase() === fullName.toLowerCase()
+    );
+
+    if (duplicateNameRow) {
+      return NextResponse.json(
+        {
+          error: `Duplicate Full Name: An employee named '${fullName}' already exists (${duplicateNameRow.employee_id}).`,
         },
         { status: 409 }
       );
@@ -254,8 +317,7 @@ export async function POST(req: NextRequest, _context: any) {
         }
       }
     } else {
-      // 3. Fallback Path if SUPABASE_SERVICE_ROLE_KEY was not bound in Cloudflare Worker secrets:
-      // Try atomic SECURITY DEFINER RPC `admin_create_employee` first, then `auth.signUp` (which fires `handle_new_user` trigger)
+      // 3. Fallback Path if SUPABASE_SERVICE_ROLE_KEY was not bound in Cloudflare Worker secrets
       const normalizedStart =
         dutyStartTime.length === 5 ? `${dutyStartTime}:00` : dutyStartTime;
       const normalizedEnd =
@@ -279,9 +341,14 @@ export async function POST(req: NextRequest, _context: any) {
       );
 
       if (!rpcError && rpcEmployee) {
+        const nextSuggested = computeNextEmployeeId([
+          ...allRows.map((r: any) => String(r.employee_id || "")),
+          employeeId,
+        ]);
         return NextResponse.json({
           message: `Employee '${fullName}' (${employeeId}) created and auto-confirmed!`,
           employee: rpcEmployee,
+          next_employee_id: nextSuggested,
         });
       }
 
@@ -321,7 +388,7 @@ export async function POST(req: NextRequest, _context: any) {
       );
     }
 
-    // 4. Confirm/synchronize row in `public.users` (inserted by `handle_new_user` trigger)
+    // 4. Confirm/synchronize row in `public.users`
     const { data: userRecord, error: upsertError } = await supabaseAdmin
       .from("users")
       .upsert(
@@ -352,9 +419,15 @@ export async function POST(req: NextRequest, _context: any) {
       );
     }
 
+    const nextSuggested = computeNextEmployeeId([
+      ...allRows.map((r: any) => String(r.employee_id || "")),
+      employeeId,
+    ]);
+
     return NextResponse.json({
       message: `Employee '${fullName}' (${employeeId}) created and auto-confirmed!`,
       employee: userRecord,
+      next_employee_id: nextSuggested,
     });
   } catch (err: unknown) {
     const message =
@@ -367,8 +440,14 @@ export async function POST(req: NextRequest, _context: any) {
 }
 
 export async function PUT(req: NextRequest, _context: any) {
+  let cfEnv: Record<string, any> = {};
   try {
-    const { supabaseAdmin, hasServiceRole } = createPerRequestSupabaseAdmin(req);
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  try {
+    const { supabaseAdmin, hasServiceRole } = createPerRequestSupabaseAdmin(req, cfEnv);
     if (!supabaseAdmin) {
       return NextResponse.json(
         { error: "Supabase credentials missing." },
@@ -378,8 +457,10 @@ export async function PUT(req: NextRequest, _context: any) {
 
     const body = await req.json();
     const id = body.id;
-    const fullName = (body.full_name || "").trim();
-    const password = (body.password || "").trim();
+    const fullName = String(body.full_name || "")
+      .trim()
+      .replace(/\s+/g, " ");
+    const password = String(body.password || "").trim();
 
     if (!id || !fullName) {
       return NextResponse.json(
@@ -388,14 +469,34 @@ export async function PUT(req: NextRequest, _context: any) {
       );
     }
 
-    let employeeId = (body.employee_id || "").trim().toUpperCase();
+    const { data: allUsers } = await supabaseAdmin
+      .from("users")
+      .select("id, employee_id, full_name");
+
+    const otherUsers = (allUsers || []).filter((u: any) => u.id !== id);
+
+    const duplicateNameRow = otherUsers.find(
+      (u: any) =>
+        String(u.full_name || "")
+          .trim()
+          .replace(/\s+/g, " ")
+          .toLowerCase() === fullName.toLowerCase()
+    );
+    if (duplicateNameRow) {
+      return NextResponse.json(
+        {
+          error: `Duplicate Full Name: Another employee named '${fullName}' already exists (${duplicateNameRow.employee_id}).`,
+        },
+        { status: 409 }
+      );
+    }
+
+    let employeeId = String(body.employee_id || "")
+      .trim()
+      .toUpperCase();
     if (!employeeId) {
-      const { data: existingEmp } = await supabaseAdmin
-        .from("users")
-        .select("employee_id")
-        .eq("id", id)
-        .maybeSingle();
-      employeeId = existingEmp?.employee_id || "";
+      const currentEmp = (allUsers || []).find((u: any) => u.id === id);
+      employeeId = currentEmp?.employee_id || "";
     }
 
     const monthlySalary =
@@ -498,8 +599,14 @@ export async function PUT(req: NextRequest, _context: any) {
 }
 
 export async function DELETE(req: NextRequest, _context: any) {
+  let cfEnv: Record<string, any> = {};
   try {
-    const { supabaseAdmin, hasServiceRole } = createPerRequestSupabaseAdmin(req);
+    const { env } = getCloudflareContext();
+    cfEnv = env as Record<string, any>;
+  } catch { /* Local development uses process.env below. */ }
+
+  try {
+    const { supabaseAdmin, hasServiceRole } = createPerRequestSupabaseAdmin(req, cfEnv);
     if (!supabaseAdmin) {
       return NextResponse.json(
         { error: "Supabase credentials missing." },

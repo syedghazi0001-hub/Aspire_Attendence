@@ -105,14 +105,14 @@ export default function AdminSettingsPage() {
         {errorMsg && (
           <div className="glass-panel rounded-2xl border-rose-400/50 p-4 text-rose-900 dark:text-rose-200 flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-            <div className="text-xs font-bold">{errorMsg}</div>
+            <div className="text-xs font-medium">{errorMsg}</div>
           </div>
         )}
 
         {successMsg && (
           <div className="glass-panel rounded-2xl border-emerald-400/50 p-4 text-emerald-950 dark:text-emerald-200 flex items-start gap-3">
             <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-            <div className="text-xs font-bold">{successMsg}</div>
+            <div className="text-xs font-medium">{successMsg}</div>
           </div>
         )}
 
@@ -125,7 +125,7 @@ export default function AdminSettingsPage() {
                     <MapPin className="w-5 h-5" />
                   </div>
                   <div>
-                    <h2 className="text-base font-extrabold text-slate-800 dark:text-white">
+                    <h2 className="text-base font-medium text-slate-800 dark:text-white">
                       Geofence Coordinates &amp; Radius
                     </h2>
                     <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
@@ -136,7 +136,7 @@ export default function AdminSettingsPage() {
                 <button
                   type="button"
                   onClick={handleUseCurrentGps}
-                  className="btn-3d-glass rounded-xl px-3.5 py-2 text-xs font-bold inline-flex items-center gap-1.5"
+                  className="btn-3d-glass rounded-xl px-3.5 py-2 text-xs font-medium inline-flex items-center gap-1.5"
                 >
                   <Compass className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                   Use My Current GPS
@@ -146,7 +146,7 @@ export default function AdminSettingsPage() {
               <form onSubmit={handleSaveSettings} className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
+                    <label className="block text-xs font-medium uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
                       Workplace Latitude
                     </label>
                     <input
@@ -155,11 +155,11 @@ export default function AdminSettingsPage() {
                       required
                       value={labLat}
                       onChange={(e) => setLabLat(e.target.value)}
-                      className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-bold"
+                      className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-medium"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
+                    <label className="block text-xs font-medium uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
                       Workplace Longitude
                     </label>
                     <input
@@ -168,14 +168,14 @@ export default function AdminSettingsPage() {
                       required
                       value={labLng}
                       onChange={(e) => setLabLng(e.target.value)}
-                      className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-bold"
+                      className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-medium"
                     />
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
+                    <label className="block text-xs font-medium uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
                       Allowed Radius (Meters)
                     </label>
                     <input
@@ -186,7 +186,7 @@ export default function AdminSettingsPage() {
                       required
                       value={radiusMeters}
                       onChange={(e) => setRadiusMeters(e.target.value)}
-                      className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-bold"
+                      className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-medium"
                     />
                     <div className="flex items-center gap-1.5 mt-2">
                       {["1", "10", "50", "100"].map((preset) => (
@@ -194,7 +194,7 @@ export default function AdminSettingsPage() {
                           key={preset}
                           type="button"
                           onClick={() => setRadiusMeters(preset)}
-                          className="btn-3d-glass rounded-lg px-2.5 py-1 text-[11px] font-bold"
+                          className="btn-3d-glass rounded-lg px-2.5 py-1 text-[11px] font-medium"
                         >
                           {preset}m
                         </button>
@@ -202,7 +202,7 @@ export default function AdminSettingsPage() {
                     </div>
                   </div>
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
+                    <label className="block text-xs font-medium uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
                       Static QR Code String
                     </label>
                     <input
@@ -210,7 +210,7 @@ export default function AdminSettingsPage() {
                       required
                       value={qrCodeString}
                       onChange={(e) => setQrCodeString(e.target.value)}
-                      className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-bold"
+                      className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-medium"
                     />
                   </div>
                 </div>
@@ -218,7 +218,7 @@ export default function AdminSettingsPage() {
                 <button
                   type="submit"
                   disabled={savingSettings}
-                  className="w-full rounded-2xl btn-3d-primary py-3.5 text-sm font-extrabold disabled:opacity-60 flex items-center justify-center gap-2"
+                  className="w-full rounded-2xl btn-3d-primary py-3.5 text-sm font-medium disabled:opacity-60 flex items-center justify-center gap-2"
                 >
                   {savingSettings ? (
                     <>

@@ -5,7 +5,7 @@ interface RouteContext {
   env?: RuntimeEnv;
 }
 
-export async function GET(req: NextRequest, context?: RouteContext) {
+export async function GET(req: NextRequest, context: any) {
   const { client, isConfigured } = getSupabaseAdmin(req, context);
   if (!isConfigured || !client) {
     return NextResponse.json({ attendance: [], records: [] });

@@ -1,12 +1,7 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAdmin, RuntimeEnv } from "@/lib/supabaseAdmin";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
-// Custom interface ka naam badal diya hai taake Next.js ke type se clash na ho
-interface EnvContext {
-  env?: RuntimeEnv;
-}
-
-// Yahan 'context: any' kar diya hai taake woh 'undefined' wala error khatam ho jaye
 export async function GET(req: NextRequest, context: any) {
   const { client, isConfigured } = getSupabaseAdmin(req, context);
   if (!isConfigured || !client) {

@@ -1,4 +1,5 @@
-import { createRuntimeClients, runtimeConfigurationResponse, type RuntimeEnv } from "@/lib/supabaseRuntime";
+import { createClient } from "@supabase/supabase-js";
+import { readSupabaseConfig, runtimeConfigurationResponse, type RequestSupabaseClients } from "@/lib/supabaseRuntime";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { selectAll } from "@/lib/selectAll";
 import { requireAdmin } from "@/lib/requireAdmin";
@@ -8,12 +9,17 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 
 export async function GET(req: NextRequest, _context: any) {
-  let cfEnv: RuntimeEnv;
-  let requestClients: ReturnType<typeof createRuntimeClients>;
+  let requestClients: RequestSupabaseClients;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as RuntimeEnv;
-    requestClients = createRuntimeClients(cfEnv, false);
+    const supabaseUrl = String(env.NEXT_PUBLIC_SUPABASE_URL ?? env.SUPABASE_URL ?? "").trim();
+    const supabaseAnonKey = String(env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? env.SUPABASE_ANON_KEY ?? env.ANON_KEY ?? env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? env.SUPABASE_PUBLISHABLE_KEY ?? "").trim();
+    const serviceRoleKey = String(env.SUPABASE_SERVICE_ROLE_KEY ?? env.SUPABASE_SECRET_KEY ?? "").trim();
+    readSupabaseConfig({ NEXT_PUBLIC_SUPABASE_URL: supabaseUrl, NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey, SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey }, { requireAnon: false });
+    const options = { auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false } };
+    const client = createClient(supabaseUrl, serviceRoleKey, options);
+    const anonClient = client; // This operation uses service privileges; no password sign-in here.
+    requestClients = { client, anonClient };
   } catch (error) { return runtimeConfigurationResponse(error); }
 
   const denied = await requireAdmin(req, requestClients.client);
@@ -116,12 +122,17 @@ export async function GET(req: NextRequest, _context: any) {
  * Input: { user_id: string, date: string, overtime_hours: number, mode?: 'set' | 'add' }
  */
 export async function POST(req: NextRequest, _context: any) {
-  let cfEnv: RuntimeEnv;
-  let requestClients: ReturnType<typeof createRuntimeClients>;
+  let requestClients: RequestSupabaseClients;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as RuntimeEnv;
-    requestClients = createRuntimeClients(cfEnv, false);
+    const supabaseUrl = String(env.NEXT_PUBLIC_SUPABASE_URL ?? env.SUPABASE_URL ?? "").trim();
+    const supabaseAnonKey = String(env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? env.SUPABASE_ANON_KEY ?? env.ANON_KEY ?? env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? env.SUPABASE_PUBLISHABLE_KEY ?? "").trim();
+    const serviceRoleKey = String(env.SUPABASE_SERVICE_ROLE_KEY ?? env.SUPABASE_SECRET_KEY ?? "").trim();
+    readSupabaseConfig({ NEXT_PUBLIC_SUPABASE_URL: supabaseUrl, NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey, SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey }, { requireAnon: false });
+    const options = { auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false } };
+    const client = createClient(supabaseUrl, serviceRoleKey, options);
+    const anonClient = client; // This operation uses service privileges; no password sign-in here.
+    requestClients = { client, anonClient };
   } catch (error) { return runtimeConfigurationResponse(error); }
 
   const denied = await requireAdmin(req, requestClients.client);
@@ -247,12 +258,17 @@ export async function POST(req: NextRequest, _context: any) {
 }
 
 export async function PUT(req: NextRequest, context: any) {
-  let cfEnv: RuntimeEnv;
-  let requestClients: ReturnType<typeof createRuntimeClients>;
+  let requestClients: RequestSupabaseClients;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as RuntimeEnv;
-    requestClients = createRuntimeClients(cfEnv, false);
+    const supabaseUrl = String(env.NEXT_PUBLIC_SUPABASE_URL ?? env.SUPABASE_URL ?? "").trim();
+    const supabaseAnonKey = String(env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? env.SUPABASE_ANON_KEY ?? env.ANON_KEY ?? env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? env.SUPABASE_PUBLISHABLE_KEY ?? "").trim();
+    const serviceRoleKey = String(env.SUPABASE_SERVICE_ROLE_KEY ?? env.SUPABASE_SECRET_KEY ?? "").trim();
+    readSupabaseConfig({ NEXT_PUBLIC_SUPABASE_URL: supabaseUrl, NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey, SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey }, { requireAnon: false });
+    const options = { auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false } };
+    const client = createClient(supabaseUrl, serviceRoleKey, options);
+    const anonClient = client; // This operation uses service privileges; no password sign-in here.
+    requestClients = { client, anonClient };
   } catch (error) { return runtimeConfigurationResponse(error); }
 
   const denied = await requireAdmin(req, requestClients.client);

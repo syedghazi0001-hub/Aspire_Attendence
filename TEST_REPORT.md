@@ -1,3 +1,15 @@
+# v6.2.2 results
+
+Latest checks: TypeScript PASS; npm regression suite PASS; final OpenNext Cloudflare build PASS. The existing duplicate-case warning in a generated PDF/dependency bundle remains non-fatal.
+
+This release adds structural assertions that every Supabase-initializing API file contains the direct canonical Worker-field reads and inline SDK creation. Mocked request tests verify no service clients exist at module import, request-to-request project isolation, login/session handoff, credential error classification, secret isolation, QR authorization/rotation and approved-leave blocking.
+
+Application source audit: no build-process environment accessor. UI/master SQL diff: unchanged. The browser public-config initialization was inspected, not rewritten.
+
+No real Cloudflare account or Supabase credentials were supplied. Live production authentication, binding delivery, GPS hardware and simultaneous-request load behavior are not proven by these local/mocked checks. Previous-release local Wrangler smoke checks are retained below as historical checks, not claimed as a new live production test.
+
+---
+
 # v6.2.1 verification report
 
 ## Passed

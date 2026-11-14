@@ -1,21 +1,26 @@
-# v6.2.1 changes
+# v6.2.2 full replacement paths
 
-Base commit: `19b8a2be68b152ccaec022fa39ec9601dae7a3f5`.
+Base: `9dac3f21685f94511ada93afc0796bc5bb577e82`.
 
-## Modified/new
 - `README.md`
 - `TEST_REPORT.md`
 - `UPGRADE_START_HERE.md`
 - `package-lock.json`
 - `package.json`
-- `src/app/api/health/route.ts`
-- `src/app/api/public-config/route.ts`
+- `src/app/api/admin/attendance/route.ts`
+- `src/app/api/admin/employees/route.ts`
+- `src/app/api/admin/leaves/route.ts`
+- `src/app/api/admin/payroll/route.ts`
+- `src/app/api/admin/sessions/route.ts`
+- `src/app/api/admin/settings/route.ts`
+- `src/app/api/employee/attendance/route.ts`
+- `src/app/api/employee/leave/route.ts`
+- `src/app/api/employee/login/route.ts`
+- `src/app/api/employee/session/route.ts`
 - `src/lib/release.ts`
+- `src/lib/supabaseAdmin.ts`
 - `src/lib/supabaseRuntime.ts`
+- `src/types/cloudflare-env.d.ts`
 - `tests/cloudflare-runtime.cjs`
-- `tsconfig.json`
-- `wrangler.toml`
 
-All other API routes were audited and retained. The complete-code document also supplies those routes for convenience. Existing UI pages/components were not altered.
-
-The package contains only `supabase/schema.sql`; superseded migration files are omitted. It does not modify the remote GitHub repository or deployed Worker.
+Verified but unchanged: browser client, public-config route, UI and master SQL. No remote repository or database was modified.

@@ -1,3 +1,37 @@
+# Aspire Attendance v6.2.2 — explicit inline Worker bindings
+
+Base repository commit: `9dac3f21685f94511ada93afc0796bc5bb577e82`.
+
+## This update
+
+Every Supabase-initializing API handler now explicitly reads `getCloudflareContext().env`, assigns the URL/public/service variables, and calls `createClient` **inside that handler**. The shared runtime file now provides validation and types only, not a hidden client factory. The compatibility `src/lib/supabaseAdmin.ts` also constructs new clients when called, never at module scope.
+
+12 API files were audited; 10 initialize Supabase, across 25 handlers. The two configuration/health routes do not need to instantiate database clients. The application source contains no build-process environment access. Canonical binding names are preferred, with the previously supported Worker-only aliases retained.
+
+`src/lib/supabaseClient.ts` was verified and preserved: browser auth fetches only safe URL/public-key configuration from `/api/public-config`. Cloudflare context and the service key are server-only.
+
+UI/components, attendance/leave/payroll business pages, and the master SQL were **not changed**. Existing `keep_vars` deployment safeguards remain.
+
+## Verification for this release
+
+- `npx tsc --noEmit` passed.
+- `npm test` passed, including mocked-handler assertions for explicit Worker reads and inline per-request client creation.
+- `npx @opennextjs/cloudflare build` passed; existing non-fatal bundled dependency warning remains.
+- Existing GPS/payroll/schema/session/QR/leave-blocking regression cases passed.
+- Static audit confirmed no production source occurrence of the forbidden environment accessor and no UI/master-SQL differences from the base commit.
+
+## Important deployment distinction
+
+The previous repository already read Worker bindings through a helper. Inlining makes the access pattern explicit; it cannot create bindings that are absent from a running Worker. If this release still returns missing bindings, use the key-free `GET /api/health` response to identify the running release (`6.2.2-inline-worker-bindings`) and the missing binding names. Check the actual deployed Worker and its production/preview environment, not just the build configuration. Never share keys or token values in chat.
+
+The application cannot remotely inspect your Cloudflare account, restore absent secrets, or validate your real Supabase passwords without access. No production deployment or live login success is claimed. Do not bypass Admin authorization to suppress a configuration error.
+
+The complete-project ZIP includes only `supabase/schema.sql`, unchanged from the existing master. No new database migration is introduced by this client-initialization update. The full replacement-code document includes every changed file plus the verified browser client and public configuration route.
+
+---
+
+## Prior release architecture and feature notes
+
 # Aspire Attendance v6.2.1 — Runtime binding retention and diagnostics
 
 Based on repository commit `19b8a2be68b152ccaec022fa39ec9601dae7a3f5` from https://github.com/syedghazi0001-hub/Aspire_Attendence. This is the deployed-source update, not a new template. No live GitHub push or production database operation was performed.

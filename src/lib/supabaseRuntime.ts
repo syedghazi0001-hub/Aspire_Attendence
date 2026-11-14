@@ -1,5 +1,5 @@
 import { APP_RELEASE } from "./release";
-import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
 /** Only Worker bindings supplied by a request handler. No build-time fallback. */
@@ -40,14 +40,8 @@ export function readSupabaseConfig(env: RuntimeEnv, options: { publicOnly?: bool
   if (invalid.length) throw new SupabaseConfigurationError(invalid);
   return { url, anonKey, serviceRoleKey };
 }
-/** Call only inside a request handler. Clients/tokens are never cached globally. */
-export function createRuntimeClients(env: RuntimeEnv, requireAnon = false) {
-  const config = readSupabaseConfig(env, { requireAnon });
-  const options = { auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false } };
-  const client = createClient(config.url, config.serviceRoleKey, options);
-  const anonClient = requireAnon ? createClient(config.url, config.anonKey, options) : client;
-  return { client, anonClient };
-}
+/** Types only: routes own their per-request client creation. */
+export interface RequestSupabaseClients { client: SupabaseClient; anonClient: SupabaseClient }
 export function runtimeConfigurationResponse(error: unknown) {
   return NextResponse.json({
     error: error instanceof SupabaseConfigurationError ? error.message : "Cloudflare request bindings are unavailable.",

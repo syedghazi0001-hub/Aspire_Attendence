@@ -49,7 +49,7 @@ const req=(url,body,admin=false)=>new NextRequest('https://worker.test'+url,{met
  assert.equal(creates.length,0); // no module-global server Supabase clients
  assert.match(fs.readFileSync('wrangler.toml','utf8'), /^keep_vars\s*=\s*true/m);
  assert.ok(require('../package.json').scripts.deploy.includes('--keep-vars'));
- workerEnv={};let healthResponse=await health.GET(req('/api/health'),{});assert.equal(healthResponse.status,503);let healthData=await healthResponse.json();assert.equal(healthData.release,'6.2.1-runtime-bindings');assert.ok(healthData.bindings.includes('NEXT_PUBLIC_SUPABASE_URL'));assert.equal(creates.length,0);
+ workerEnv={};let healthResponse=await health.GET(req('/api/health'),{});assert.equal(healthResponse.status,503);let healthData=await healthResponse.json();assert.equal(healthData.release,'6.2.2-inline-worker-bindings');assert.ok(healthData.bindings.includes('NEXT_PUBLIC_SUPABASE_URL'));assert.equal(creates.length,0);
  workerEnv=configured('health-worker');healthResponse=await health.GET(req('/api/health'),{});assert.equal(healthResponse.status,200);healthData=await healthResponse.json();assert.equal(healthData.configurationReady,true);assert.equal(healthData.liveSupabaseVerified,false);assert.ok(!JSON.stringify(healthData).includes(workerEnv.SUPABASE_SERVICE_ROLE_KEY));assert.equal(creates.length,0);
 
  workerEnv=configured('runtime-a');let response=await login.POST(req('/api/employee/login',{identifier:'admin@example.com',password:' pass with spaces '}),{});
@@ -68,5 +68,14 @@ const req=(url,body,admin=false)=>new NextRequest('https://worker.test'+url,{met
  response=await settings.PUT(req('/api/admin/settings',{qr_secret:'ROTATED-QR'},true),{});assert.equal(response.status,200);assert.equal((await response.json()).settings.qr_secret,'ROTATED-QR');
  scenario='leave-block';writes=[];response=await attendance.POST(req('/api/employee/attendance',{session_token:'employee-token',device_fingerprint:'fp',qr_data:'ROTATED-QR',lat:32,lng:74,intent:'clock_in'}),{});assert.equal(response.status,409);assert.equal((await response.json()).leave_blocked,true);assert.equal(writes.length,0);
  for(const file of fs.readdirSync('src/app/api/admin')){const p='src/app/api/admin/'+file+'/route.ts';if(fs.existsSync(p)){const s=fs.readFileSync(p,'utf8');assert.ok(s.includes('getCloudflareContext()'));assert.ok(!s.includes('process.env'));}}
+ // Every Supabase-initializing API must read the three Worker fields and create inside handlers.
+ const scan=dir=>fs.readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.isDirectory()?scan(path.join(dir,e.name)):[path.join(dir,e.name)]);
+ for(const file of scan('src/app/api').filter(f=>f.endsWith('route.ts'))){
+  const source=fs.readFileSync(file,'utf8');assert.ok(!source.includes('process.env'));
+  if(source.includes('createClient(')){
+   for(const snippet of ['const { env } = getCloudflareContext();','env.NEXT_PUBLIC_SUPABASE_URL','env.NEXT_PUBLIC_SUPABASE_ANON_KEY','env.SUPABASE_SERVICE_ROLE_KEY','createClient(supabaseUrl, serviceRoleKey, options)'])assert.ok(source.includes(snippet),file+' lacks '+snippet);
+   assert.ok(!source.includes('createRuntimeClients'));
+  }
+ }
  console.log('PASS: runtime-only keys, per-request clients, admin session handoff, public-config secret isolation, employee/legacy login, second-device lock, error classification, failed writes, QR authorization/rotation and approved-leave blocking.');
 })().catch(error=>{console.error(error);process.exitCode=1});

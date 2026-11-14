@@ -195,7 +195,8 @@ export async function POST(req: NextRequest, _context: any) {
       userRecord = byEmpId;
     }
 
-    if (!userRecord || userRecord.role === "admin") {
+    if (!userRecord) return NextResponse.json({ error: "User profile missing. Contact Admin." }, { status: 403 });
+    if (userRecord.role === "admin") {
       return NextResponse.json({
         role: "admin",
         message: "Admin login successful.",

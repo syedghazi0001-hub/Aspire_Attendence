@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { selectAll } from "@/lib/selectAll";
+import { requireAdmin } from "@/lib/requireAdmin";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
@@ -115,6 +117,8 @@ export async function GET(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   const client = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
@@ -153,7 +157,7 @@ export async function GET(req: NextRequest, _context: any) {
     }
 
     const [{ data: rawLeaves, error }, { data: allUsers }] = await Promise.all([
-      query,
+      selectAll(query.order("id", { ascending: true })),
       client
         .from("users")
         .select(
@@ -190,6 +194,8 @@ export async function POST(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   const client = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
@@ -292,6 +298,8 @@ export async function PUT(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   const client = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
@@ -312,7 +320,9 @@ export async function PUT(req: NextRequest, _context: any) {
       );
     }
 
+    if (hours_missed !== undefined && (!Number.isFinite(Number(hours_missed)) || Number(hours_missed) < 0 || Number(hours_missed) > 24)) return NextResponse.json({ error: "Missed hours must be between 0 and 24." }, { status: 400 });
     const updatePayload: Record<string, unknown> = {};
+    if (status && !["pending", "approved", "rejected", "cancelled"].includes(status)) return NextResponse.json({ error: "Invalid leave status." }, { status: 400 });
     if (status) updatePayload.status = status;
 
     if (leave_type && ["paid", "unpaid", "short"].includes(leave_type)) {
@@ -353,6 +363,8 @@ export async function DELETE(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   const client = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
@@ -371,10 +383,10 @@ export async function DELETE(req: NextRequest, _context: any) {
     );
   }
 
-  const { error } = await client.from("leaves").delete().eq("id", id);
+  const { error } = await client.from("leaves").update({ status: "cancelled" }).eq("id", id);
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ message: "Leave record deleted." });
+  return NextResponse.json({ message: "Leave cancelled; record retained." });
 }

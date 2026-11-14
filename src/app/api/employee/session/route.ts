@@ -76,6 +76,7 @@ export async function GET(req: NextRequest, _context: any) {
     }
   }
 
+  if (!sessionRow || !fp || sessionRow.device_fingerprint !== fp) return NextResponse.json({ valid: false, error: "Valid device-bound session token required." }, { status: 401 });
   if (!userId) {
     return NextResponse.json(
       {
@@ -280,6 +281,9 @@ export async function POST(req: NextRequest, _context: any) {
       }
     }
 
+    const { data: verifiedSession } = await client.from("active_sessions").select("user_id,device_fingerprint,approval_status").eq("session_token", sessionToken).eq("is_active", true).maybeSingle();
+    if (!verifiedSession || !deviceFingerprint || verifiedSession.device_fingerprint !== deviceFingerprint || !["approved", "pending_logout"].includes(verifiedSession.approval_status)) return NextResponse.json({ error: "Approved device session required." }, { status: 401 });
+    userId = verifiedSession.user_id;
     if (!userId) {
       return NextResponse.json(
         { error: "Active employee session not found." },

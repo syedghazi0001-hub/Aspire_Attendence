@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { requireAdmin } from "@/lib/requireAdmin";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
@@ -62,6 +63,8 @@ export async function GET(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   const { client } = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
@@ -461,6 +464,8 @@ export async function PUT(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   return handleSessionDecision(req, cfEnv);
 }
@@ -471,6 +476,8 @@ export async function POST(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   return handleSessionDecision(req, cfEnv);
 }

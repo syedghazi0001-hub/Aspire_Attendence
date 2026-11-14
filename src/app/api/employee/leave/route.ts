@@ -66,7 +66,7 @@ export async function GET(req: NextRequest, _context: any) {
       .select("*")
       .eq("user_id", userId)
       .order("date", { ascending: false })
-      .limit(20);
+      .limit(500);
 
     if (error) {
       return NextResponse.json(
@@ -75,7 +75,12 @@ export async function GET(req: NextRequest, _context: any) {
       );
     }
 
-    const formatted = (data || []).map((row: Record<string, any>) => {
+    // A long future history must not hide today's full-day attendance block.
+    const today = new Date(Date.now() + 18000000).toISOString().slice(0,10);
+    const { data: todayLeave, error: todayError } = await client.from("leaves").select("*").eq("user_id", userId).eq("date", today).maybeSingle();
+    if (todayError) return NextResponse.json({ error: todayError.message }, { status: 503 });
+    const records = todayLeave && !data?.some(row => row.id === todayLeave.id) ? [todayLeave, ...(data || [])] : (data || []);
+    const formatted = records.map((row: Record<string, any>) => {
       const rawReason = String(row.reason || "")
         .replace(/^\[MANUAL\]\s*/i, "")
         .trim();
@@ -148,9 +153,10 @@ export async function POST(req: NextRequest, _context: any) {
       dbLeaveType = "paid";
     }
 
+    if (rawLeaveType === "short" && (!Number.isFinite(Number(body.hours_missed)) || Number(body.hours_missed) <= 0 || Number(body.hours_missed) > 24)) return NextResponse.json({ error: "Short-leave hours must be greater than zero and at most 24." }, { status: 400 });
     const hoursMissed =
       dbLeaveType === "short"
-        ? Math.max(0.5, parseFloat(String(body.hours_missed || "2")) || 2)
+        ? Number(body.hours_missed)
         : 0;
 
     const categoryPrefix = leaveCategory ? `[${leaveCategory}]` : "";
@@ -159,9 +165,12 @@ export async function POST(req: NextRequest, _context: any) {
       .join(" ")
       .trim();
 
+    const { data: prior, error: priorError } = await client.from("leaves").select("id,status").eq("user_id", userId).eq("date", date).maybeSingle();
+    if (priorError) return NextResponse.json({ error: priorError.message }, { status: 500 });
+    if (prior) return NextResponse.json({ error: "A leave record already exists for this date. Ask Admin to review or amend it; approved leave can be cancelled from history." }, { status: 409 });
     const { data, error } = await client
       .from("leaves")
-      .upsert(
+      .insert(
         {
           user_id: userId,
           date,
@@ -169,8 +178,7 @@ export async function POST(req: NextRequest, _context: any) {
           hours_missed: hoursMissed,
           reason: combinedReason,
           status: "pending",
-        },
-        { onConflict: "user_id,date" }
+        }
       )
       .select()
       .single();
@@ -188,4 +196,20 @@ export async function POST(req: NextRequest, _context: any) {
       err instanceof Error ? err.message : "Failed to submit leave application";
     return NextResponse.json({ error: message }, { status: 500 });
   }
+}
+
+export async function PUT(req: NextRequest, _context: any) {
+  let cfEnv: Record<string, any> = {};
+  try { const { env } = getCloudflareContext(); cfEnv = env as Record<string, any>; } catch { /* local fallback */ }
+  const client = createAdminClientFromCloudflare(cfEnv);
+  if (!client) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  try {
+    const body = await req.json();
+    if (!await ownsApprovedSession(client, String(body.user_id || ""), String(body.session_token || ""), String(body.device_fingerprint || ""))) return NextResponse.json({ error: "Approved device session required." }, { status: 401 });
+    if (!body.id) return NextResponse.json({ error: "Leave ID required." }, { status: 400 });
+    const { data, error } = await client.rpc("cancel_employee_leave", { p_user_id: body.user_id, p_leave_id: body.id, p_token: body.session_token, p_fingerprint: body.device_fingerprint });
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    if (!data) return NextResponse.json({ error: "Only today's or future approved leave can be cancelled by an employee. Ask Admin for historical corrections." }, { status: 409 });
+    return NextResponse.json({ leave: data, message: "Leave cancelled. Attendance is now available." });
+  } catch { return NextResponse.json({ error: "Unable to cancel leave." }, { status: 500 }); }
 }

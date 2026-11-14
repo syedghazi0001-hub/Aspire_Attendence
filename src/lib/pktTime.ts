@@ -225,29 +225,14 @@ export function calculateShiftMetricsPkt(
   }
 
   const inInfo = getPktTimeInfo(inDate);
-  const outInfo = getPktTimeInfo(outDate);
-
-  const { dutyEndMins } = resolveShiftWindowMinutes(dutyStartStr, dutyEndStr);
-
-  const checkInMins = inInfo.minutesOfDay;
-  // Compute checkOutMins relative to the check-in day in PKT
-  const totalElapsedMins = (outDate.getTime() - inDate.getTime()) / (60 * 1000);
-  const checkOutMins =
-    inInfo.dateStr === outInfo.dateStr
-      ? outInfo.minutesOfDay
-      : checkInMins + Math.max(0, totalElapsedMins);
-
-  // Formula: Overtime = max(0, CheckOutTime - max(DutyEndTime, CheckInTime))
-  // Arriving early (CheckInTime < DutyStartTime) does not lower DutyEndTime,
-  // so time before DutyStartTime is never counted as overtime.
-  const overtimeStartBaseline = Math.max(dutyEndMins, checkInMins);
-  const rawOvertimeMins = Math.max(0, checkOutMins - overtimeStartBaseline);
-
-  const overtimeMinutes = Math.max(0, Math.round(rawOvertimeMins));
-  const overtimeHours = Math.max(
-    0,
-    Math.round((overtimeMinutes / 60) * 100) / 100
-  );
+  const { dutyStartMins, dutyEndMins } = resolveShiftWindowMinutes(dutyStartStr, dutyEndStr);
+  const midnight = Date.parse(`${inInfo.dateStr}T00:00:00+05:00`);
+  let dutyEndMs = midnight + dutyEndMins * 60000;
+  // After-midnight check-in belongs to previous night's still-open overnight shift.
+  if (dutyEndMins > 1440 && inInfo.minutesOfDay < dutyEndMins - 1440) dutyEndMs -= 86400000;
+  const rawOvertimeMins = Math.max(0, (outDate.getTime() - Math.max(dutyEndMs, inDate.getTime())) / 60000);
+  const overtimeMinutes = Math.round(rawOvertimeMins * 100) / 100;
+  const overtimeHours = Math.round(rawOvertimeMins / 60 * 100) / 100;
 
   return {
     overtimeMinutes,

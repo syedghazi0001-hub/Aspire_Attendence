@@ -154,7 +154,7 @@ export async function POST(req: NextRequest, _context: any) {
       );
     }
 
-    const { data: settingsRow } = await client
+    const { data: settingsRow, error: settingsError } = await client
       .from("settings")
       .select("*")
       .eq("id", 1)
@@ -166,6 +166,7 @@ export async function POST(req: NextRequest, _context: any) {
     // saved to public.settings. Any old printed or photographed QR code string
     // no longer matches activeQrSecret and is immediately rejected here.
     // =========================================================================
+    if (settingsError || !settingsRow?.qr_secret) return NextResponse.json({ error: "Workplace settings unavailable; attendance was not changed." }, { status: 503 });
     const activeQrSecret = String(
       settingsRow?.qr_secret ||
         settingsRow?.qr_code_string ||
@@ -198,24 +199,10 @@ export async function POST(req: NextRequest, _context: any) {
     // =========================================================================
     // 2. HIGH-PRECISION HAVERSINE GPS DISTANCE ENFORCEMENT (IN METERS)
     // =========================================================================
-    const officeLat = Number(
-      settingsRow?.office_lat ??
-        settingsRow?.lab_lat ??
-        settingsRow?.lab_latitude ??
-        32.64
-    );
-    const officeLng = Number(
-      settingsRow?.office_lng ??
-        settingsRow?.lab_lng ??
-        settingsRow?.lab_longitude ??
-        74.18
-    );
-    const allowedRadius = Math.max(
-      1,
-      Number(
-        settingsRow?.radius_meters ?? settingsRow?.allowed_radius_meters ?? 100
-      )
-    );
+    const officeLat = Number(settingsRow.office_lat);
+    const officeLng = Number(settingsRow.office_lng);
+    const allowedRadius = Number(settingsRow.radius_meters);
+    if (settingsRow.office_lat == null || settingsRow.office_lng == null || !Number.isFinite(officeLat) || Math.abs(officeLat)>90 || !Number.isFinite(officeLng) || Math.abs(officeLng)>180 || !Number.isFinite(allowedRadius) || allowedRadius<1) return NextResponse.json({ error: "Invalid workplace GPS configuration. Ask Admin to correct settings." }, { status: 503 });
 
     const distanceMeters = calculateDistanceInMeters(
       empLat,
@@ -244,13 +231,19 @@ export async function POST(req: NextRequest, _context: any) {
     const dutyEnd = userRow.duty_end_time || "17:00:00";
     const pktNow = getPktTimeInfo(new Date());
 
-    const { data: existingRecord } = await client
+    const { data: approvedLeave, error: leaveError } = await client.from("leaves").select("leave_type,hours_missed").eq("user_id", userRow.id).eq("date", pktNow.dateStr).eq("status", "approved").maybeSingle();
+    if (leaveError) return NextResponse.json({ error: "Cannot verify leave status. Attendance was not changed. Please retry." }, { status: 503 });
+    if (approvedLeave && ["paid", "unpaid"].includes(approvedLeave.leave_type)) return NextResponse.json({ error: "Approved full-day leave: cancel your leave before marking attendance.", leave_blocked: true }, { status: 409 });
+    const shortMissedHours = approvedLeave?.leave_type === "short" ? Math.max(0, Number(approvedLeave.hours_missed || 0)) : 0;
+
+    const { data: existingRecord, error: attendanceReadError } = await client
       .from("attendance")
       .select("*")
       .eq("user_id", userRow.id)
       .eq("date", pktNow.dateStr)
       .maybeSingle();
 
+    if (attendanceReadError) return NextResponse.json({ error: attendanceReadError.message }, { status: 503 });
     const existingClockIn =
       existingRecord?.clock_in || existingRecord?.login_time || null;
     const existingClockOut =
@@ -304,7 +297,7 @@ export async function POST(req: NextRequest, _context: any) {
             status: "Present",
             overtime_hours: preservedManualOtHours,
             overtime_minutes: preservedManualOtMins,
-            missed_hours: 0,
+            missed_hours: shortMissedHours,
           },
           { onConflict: "user_id,date" }
         )
@@ -345,15 +338,9 @@ export async function POST(req: NextRequest, _context: any) {
         dutyEnd
       );
 
-      // Keep whichever is greater or add manual overtime if Admin already granted manual OT today
-      const existingManualOtHours = Math.max(
-        0,
-        Number(existingRecord?.overtime_hours || 0)
-      );
-      const finalOvertimeHours = Math.max(
-        0,
-        Math.round((overtimeHours + existingManualOtHours) * 100) / 100
-      );
+      // A manual correction is an explicit final total, never an additive bonus.
+      const finalOvertimeHours = existingRecord?.overtime_override_hours != null
+        ? Math.max(0, Number(existingRecord.overtime_override_hours)) : overtimeHours;
       const finalOvertimeMinutes = Math.max(
         0,
         Math.round(finalOvertimeHours * 60)
@@ -366,9 +353,10 @@ export async function POST(req: NextRequest, _context: any) {
           logout_time: pktNow.isoPkt,
           overtime_minutes: finalOvertimeMinutes,
           overtime_hours: finalOvertimeHours,
-          missed_hours: 0,
+          missed_hours: shortMissedHours,
         })
         .eq("id", existingRecord.id)
+        .is("clock_out", null)
         .select()
         .single();
 
@@ -389,7 +377,7 @@ export async function POST(req: NextRequest, _context: any) {
         distance_meters: distanceMeters,
         allowed_radius_meters: allowedRadius,
         overtime_hours: finalOvertimeHours,
-        missed_hours: 0,
+        missed_hours: shortMissedHours,
         record: {
           ...updated,
           clock_in: updated.clock_in || existingClockIn,
@@ -397,7 +385,7 @@ export async function POST(req: NextRequest, _context: any) {
           clock_out: updated.clock_out || pktNow.isoPkt,
           logout_time: updated.logout_time || pktNow.isoPkt,
           overtime_hours: finalOvertimeHours,
-          missed_hours: 0,
+          missed_hours: shortMissedHours,
         },
       });
     }

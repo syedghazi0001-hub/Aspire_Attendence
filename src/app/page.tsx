@@ -70,7 +70,7 @@ export default function UnifiedLoginPage() {
             .eq("id", directAuth.user.id)
             .maybeSingle();
 
-          if (!userRow || userRow.role === "admin") {
+          if (userRow?.role === "admin") {
             router.push("/admin");
             return;
           }

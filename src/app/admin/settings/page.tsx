@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import AdminShell from "@/components/AdminShell";
-import QrGeneratorCard from "@/components/QrGeneratorCard";
+import { getAveragedGps } from "@/lib/accurateGps";
 import { adminFetch } from "@/lib/adminFetch";
 import {
   MapPin,
@@ -14,10 +14,13 @@ import {
 } from "lucide-react";
 
 export default function AdminSettingsPage() {
+  const gpsAbort = useRef<AbortController | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [gpsBusy, setGpsBusy] = useState(false);
+  useEffect(() => () => gpsAbort.current?.abort(), []);
   const [labLat, setLabLat] = useState<string>("24.8607");
   const [labLng, setLabLng] = useState<string>("67.0011");
   const [radiusMeters, setRadiusMeters] = useState<string>("100");
-  const [qrCodeString, setQrCodeString] = useState<string>("LAB_QR_STATIC_01");
   const [savingSettings, setSavingSettings] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [successMsg, setSuccessMsg] = useState<string>("");
@@ -26,15 +29,14 @@ export default function AdminSettingsPage() {
     try {
       const response = await adminFetch("/api/admin/settings");
       const data = await response.json();
+      if (!response.ok || !data.settings) throw new Error(data.error || "Settings unavailable.");
       if (data.settings) {
+        setLoaded(true);
         setLabLat(String(data.settings.lab_lat));
         setLabLng(String(data.settings.lab_lng));
         setRadiusMeters(String(data.settings.radius_meters));
-        setQrCodeString(String(data.settings.qr_code_string));
       }
-    } catch {
-      // Handled gracefully
-    }
+    } catch(error) { setErrorMsg(error instanceof Error ? error.message : "Settings unavailable."); }
   }, []);
 
   useEffect(() => {
@@ -54,7 +56,6 @@ export default function AdminSettingsPage() {
           lab_lat: parseFloat(labLat),
           lab_lng: parseFloat(labLng),
           radius_meters: parseFloat(radiusMeters),
-          qr_code_string: qrCodeString.trim(),
         }),
       });
       const result = await response.json();
@@ -63,7 +64,7 @@ export default function AdminSettingsPage() {
         return;
       }
       setSuccessMsg(
-        result.message || "GPS Geofence & QR settings saved successfully."
+        result.message || "GPS Geofence settings saved successfully."
       );
     } catch (err: unknown) {
       const msg =
@@ -74,31 +75,20 @@ export default function AdminSettingsPage() {
     }
   };
 
-  const handleUseCurrentGps = () => {
-    setErrorMsg("");
-    setSuccessMsg("");
-    if (!navigator.geolocation) {
-      setErrorMsg("Geolocation is not supported by this browser.");
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLabLat(pos.coords.latitude.toFixed(6));
-        setLabLng(pos.coords.longitude.toFixed(6));
-        setSuccessMsg(
-          "Captured current device coordinates! Click 'Save GPS & QR Settings' to persist."
-        );
-      },
-      (err) => {
-        setErrorMsg(`GPS Error: ${err.message}`);
-      },
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
+  const handleUseCurrentGps = async () => {
+    setErrorMsg(""); setSuccessMsg("");
+    gpsAbort.current?.abort(); gpsAbort.current = new AbortController(); setGpsBusy(true);
+    try {
+      const pos = await getAveragedGps(setSuccessMsg, gpsAbort.current.signal);
+      setLabLat(pos.coords.latitude.toFixed(8));
+      setLabLng(pos.coords.longitude.toFixed(8));
+      setSuccessMsg("5 GPS readings averaged. Save GPS Settings to persist.");
+    } catch (error) { setErrorMsg(error instanceof Error ? error.message : "GPS failed."); } finally { setGpsBusy(false); }
   };
 
   return (
     <AdminShell
-      title="GPS Geofence & Static QR Settings"
+      title="GPS Settings"
       subtitle="Set the exact workplace GPS radius (e.g., 1 meter, 10 meters, 100 meters) strictly enforced during QR scanning"
     >
       <div className="space-y-6">
@@ -117,7 +107,7 @@ export default function AdminSettingsPage() {
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <div className="lg:col-span-6 glass-panel rounded-3xl p-6 flex flex-col justify-between">
+          <div className="lg:col-span-12 glass-panel rounded-3xl p-6 flex flex-col justify-between">
             <div>
               <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
                 <div className="flex items-center gap-3">
@@ -136,6 +126,7 @@ export default function AdminSettingsPage() {
                 <button
                   type="button"
                   onClick={handleUseCurrentGps}
+                    disabled={gpsBusy}
                   className="btn-3d-glass rounded-xl px-3.5 py-2 text-xs font-medium inline-flex items-center gap-1.5"
                 >
                   <Compass className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
@@ -201,23 +192,11 @@ export default function AdminSettingsPage() {
                       ))}
                     </div>
                   </div>
-                  <div>
-                    <label className="block text-xs font-medium uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
-                      Static QR Code String
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={qrCodeString}
-                      onChange={(e) => setQrCodeString(e.target.value)}
-                      className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm font-mono font-medium"
-                    />
-                  </div>
                 </div>
 
                 <button
                   type="submit"
-                  disabled={savingSettings}
+                  disabled={savingSettings || !loaded || gpsBusy}
                   className="w-full rounded-2xl btn-3d-primary py-3.5 text-sm font-medium disabled:opacity-60 flex items-center justify-center gap-2"
                 >
                   {savingSettings ? (
@@ -228,7 +207,7 @@ export default function AdminSettingsPage() {
                   ) : (
                     <>
                       <Save className="w-4 h-4" />
-                      Save GPS &amp; QR Settings
+                      Save GPS Settings
                     </>
                   )}
                 </button>
@@ -236,14 +215,7 @@ export default function AdminSettingsPage() {
             </div>
           </div>
 
-          <div className="lg:col-span-6">
-            <QrGeneratorCard
-              qrString={qrCodeString || "LAB_QR_STATIC_01"}
-              labLat={parseFloat(labLat) || 0}
-              labLng={parseFloat(labLng) || 0}
-              radiusMeters={parseFloat(radiusMeters) || 100}
-            />
-          </div>
+
         </div>
       </div>
     </AdminShell>

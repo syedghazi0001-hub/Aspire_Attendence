@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { selectAll } from "@/lib/selectAll";
+import { requireAdmin } from "@/lib/requireAdmin";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
@@ -45,6 +47,8 @@ export async function GET(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   const client = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
@@ -86,7 +90,7 @@ export async function GET(req: NextRequest, _context: any) {
     }
 
     const [{ data, error }, { data: allUsers }] = await Promise.all([
-      query,
+      selectAll(query.order("id", { ascending: true })),
       client
         .from("users")
         .select(
@@ -148,6 +152,8 @@ export async function POST(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   const client = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
@@ -161,10 +167,10 @@ export async function POST(req: NextRequest, _context: any) {
     const body = await req.json();
     const userId = String(body.user_id || "").trim();
     const date = String(body.date || "").trim();
-    const inputHours = parseFloat(
+    const inputHours = Number(
       String(body.overtime_hours ?? body.hours ?? "0")
     );
-    const mode = body.mode === "add" ? "add" : "set";
+    if (body.mode === "add") return NextResponse.json({ error: "Use mode set with the final overtime total; additive requests are not supported to prevent double credit." }, { status: 400 });
 
     if (!userId || !date) {
       return NextResponse.json(
@@ -173,7 +179,7 @@ export async function POST(req: NextRequest, _context: any) {
       );
     }
 
-    if (Number.isNaN(inputHours) || inputHours < 0 || inputHours > 24) {
+    if (!Number.isFinite(inputHours) || inputHours < 0 || inputHours > 24) {
       return NextResponse.json(
         {
           error:
@@ -183,22 +189,24 @@ export async function POST(req: NextRequest, _context: any) {
       );
     }
 
-    const { data: existingRow } = await client
+    const { data: existingRow, error: existingError } = await client
       .from("attendance")
       .select("*")
       .eq("user_id", userId)
       .eq("date", date)
       .maybeSingle();
 
+    if (existingError) return NextResponse.json({ error: existingError.message }, { status: 500 });
     const currentOt = Math.max(0, Number(existingRow?.overtime_hours || 0));
     const finalOtHours = Math.max(
       0,
       Math.round(
-        ((mode === "add" ? currentOt + inputHours : inputHours) +
+        ((inputHours) +
           Number.EPSILON) *
           100
       ) / 100
     );
+    if (finalOtHours > 24) return NextResponse.json({ error: "Total overtime must not exceed 24 hours." }, { status: 400 });
     const finalOtMinutes = Math.round(finalOtHours * 60);
 
     let savedRecord: Record<string, any> | null = null;
@@ -208,6 +216,7 @@ export async function POST(req: NextRequest, _context: any) {
         .from("attendance")
         .update({
           overtime_hours: finalOtHours,
+          overtime_override_hours: finalOtHours,
           overtime_minutes: finalOtMinutes,
         })
         .eq("id", existingRow.id)
@@ -227,6 +236,7 @@ export async function POST(req: NextRequest, _context: any) {
             date,
             status: "Present",
             overtime_hours: finalOtHours,
+          overtime_override_hours: finalOtHours,
             overtime_minutes: finalOtMinutes,
             missed_hours: 0,
           },
@@ -270,6 +280,8 @@ export async function PUT(req: NextRequest, context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   return POST(req, context);
 }

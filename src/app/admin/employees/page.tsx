@@ -9,6 +9,7 @@ import {
   getCurrentMonthPkt,
   calculateShiftDurationHours,
 } from "@/lib/pktTime";
+import { calculatePayroll } from "@/lib/payroll";
 import { generateMonthlySalaryPdf } from "@/lib/pdfGenerator";
 import {
   Users,
@@ -35,6 +36,7 @@ interface EmployeeProfile {
   duty_start_time: string;
   duty_end_time: string;
   created_at: string;
+  requires_rate_review?: boolean;
 }
 
 interface AttendanceRecord {
@@ -55,7 +57,7 @@ interface LeaveRecord {
   leave_type: "paid" | "unpaid" | "short";
   hours_missed: number;
   reason: string;
-  status: "pending" | "approved" | "rejected";
+  status: "pending" | "approved" | "rejected" | "cancelled";
 }
 
 export default function EmployeeListPage() {
@@ -82,33 +84,20 @@ export default function EmployeeListPage() {
     setLoading(true);
     setErrorMsg("");
     try {
-      const [empRes, attRes, leavesRes] = await Promise.all([
-        adminFetch("/api/admin/employees"),
-        adminFetch(
-          `/api/admin/attendance?month=${encodeURIComponent(selectedMonth)}`
-        ),
-        adminFetch(
-          `/api/admin/leaves?month=${encodeURIComponent(selectedMonth)}`
-        ),
-      ]);
-
-      const empData = await empRes.json();
-      const attData = await attRes.json();
-      const leavesData = await leavesRes.json();
-
-      if (!empRes.ok) {
-        setErrorMsg(empData.error || "Failed to fetch employee list.");
-        return;
+      const response = await adminFetch(`/api/admin/payroll?month=${encodeURIComponent(selectedMonth)}`);
+      const snapshot = await response.json();
+      if (!response.ok || !Array.isArray(snapshot.employees) || !Array.isArray(snapshot.attendance) || !Array.isArray(snapshot.leaves)) {
+        throw new Error(snapshot.error || "Incomplete payroll snapshot. Refresh before processing payment.");
       }
-
-      setEmployees(empData.employees || []);
-      setAttendance(attData.attendance || []);
-      setLeaves(leavesData.leaves || []);
+      setEmployees(snapshot.employees);
+      setAttendance(snapshot.attendance.map((r: AttendanceRecord & { clock_in?: string | null; clock_out?: string | null }) => ({ ...r, login_time: r.clock_in || r.login_time, logout_time: r.clock_out || r.logout_time })));
+      setLeaves(snapshot.leaves);
     } catch (err: unknown) {
       const msg =
         err instanceof Error
           ? err.message
           : "Network error while loading employees.";
+      setEmployees([]); setAttendance([]); setLeaves([]);
       setErrorMsg(msg);
     } finally {
       setLoading(false);
@@ -122,11 +111,11 @@ export default function EmployeeListPage() {
   const openEditModal = (emp: EmployeeProfile) => {
     setEditingEmp(emp);
     setEditFullName(emp.full_name);
-    const sal = Number(emp.basic_salary || emp.monthly_salary || 0);
+    const sal = Number(emp.basic_salary ?? emp.monthly_salary ?? 0);
     setEditBasicSalary(String(sal));
     setEditPerDayDeduction(String(Number(emp.per_day_deduction || 0)));
     setEditHourlyRate(String(Number(emp.hourly_rate || 0)));
-    setEditOvertimeRate(String(Number(emp.overtime_rate || 0)));
+    setEditOvertimeRate(String(Number(emp.overtime_rate ?? 0)));
     setEditDutyStart((emp.duty_start_time || "09:00").slice(0, 5));
     setEditDutyEnd((emp.duty_end_time || "17:00").slice(0, 5));
   };
@@ -212,17 +201,21 @@ export default function EmployeeListPage() {
   };
 
   const handleDownloadPdf = (emp: EmployeeProfile) => {
+    if (loading || errorMsg) { setErrorMsg("Refresh complete payroll data before exporting."); return; }
     const empRows = attendance.filter((a) => a.user_id === emp.id);
     const empLeaves = leaves.filter((l) => l.user_id === emp.id);
+    const summary = calculatePayroll(emp, selectedMonth, empRows, empLeaves);
+    if (summary.issues.length) { setErrorMsg(summary.issues.join(" ")); return; }
     generateMonthlySalaryPdf({
       employee: {
+        requires_rate_review: emp.requires_rate_review,
         full_name: emp.full_name,
         employee_id: emp.employee_id,
-        basic_salary: Number(emp.basic_salary || emp.monthly_salary || 0),
+        basic_salary: Number(emp.basic_salary ?? emp.monthly_salary ?? 0),
         monthly_salary: Number(emp.monthly_salary || emp.basic_salary || 0),
         per_day_deduction: Number(emp.per_day_deduction || 0),
         hourly_rate: Number(emp.hourly_rate || 0),
-        overtime_rate: Number(emp.overtime_rate || 0),
+        overtime_rate: Number(emp.overtime_rate ?? 0),
         duty_start_time: emp.duty_start_time || "09:00",
         duty_end_time: emp.duty_end_time || "17:00",
       },
@@ -235,7 +228,7 @@ export default function EmployeeListPage() {
   return (
     <AdminShell
       title="Employees & Monthly Payroll"
-      subtitle="Generate monthly PDF reports with Present Days, Absent Days, Basic Salary, Overtime Hours, Overtime Pay, and Final Salary"
+      subtitle="Monthly payroll preview · Explicit approved leave deductions · Review exceptions before authorizing payment"
     >
       <div className="space-y-6">
         {errorMsg && (
@@ -336,52 +329,16 @@ export default function EmployeeListPage() {
                       (l) => l.user_id === emp.id && l.status === "approved"
                     );
 
-                    const basicSal = Number(
-                      emp.basic_salary || emp.monthly_salary || 0
-                    );
+                    const payroll = calculatePayroll(emp, selectedMonth, empAtt, empLeaves);
+                    const { basicSalary: basicSal, daysAttended, paidLeaves, totalPresentDays, totalAbsentDays, shortLeaveHours, totalOvertimeHours: totalOtHours, unpaidDeduction: unpaidDeduct, shortLeaveDeduction: shortDeduct, overtimePay: otPay, finalSalary } = payroll;
                     const perDayRate = Number(emp.per_day_deduction || 0);
                     const hrRate = Number(emp.hourly_rate || 0);
-                    const otRate = Number(emp.overtime_rate || hrRate || 0);
-
-                    const daysAttended = empAtt.length;
-                    const paidLeaves = empLeaves.filter(
-                      (l) => l.leave_type === "paid"
-                    ).length;
-                    const totalPresentDays = daysAttended + paidLeaves;
-
-                    const totalAbsentDays = empLeaves.filter(
-                      (l) => l.leave_type === "unpaid"
-                    ).length;
-
-                    const shortLeaveHours = empLeaves
-                      .filter((l) => l.leave_type === "short")
-                      .reduce((s, l) => s + Number(l.hours_missed || 0), 0);
-
-                    const totalOtHours =
-                      Math.round(
-                        empAtt.reduce(
-                          (s, r) => s + Math.max(0, Number(r.overtime_hours || 0)),
-                          0
-                        ) * 100
-                      ) / 100;
-
-                    const unpaidDeduct =
-                      Math.round(totalAbsentDays * perDayRate * 100) / 100;
-                    const shortDeduct =
-                      Math.round(shortLeaveHours * hrRate * 100) / 100;
-                    const otPay =
-                      Math.round(totalOtHours * otRate * 100) / 100;
-
-                    const finalSalary = Math.max(
-                      0,
-                      Math.round(
-                        (basicSal - unpaidDeduct - shortDeduct + otPay) * 100
-                      ) / 100
-                    );
+                    const otRate = Number(emp.overtime_rate ?? 0);
 
                     return (
                       <tr
                         key={emp.id}
+                        title={payroll.issues.join(" ")}
                         className="hover:bg-white/30 dark:hover:bg-slate-800/30 transition"
                       >
                         <td className="py-3.5 px-4">
@@ -454,7 +411,7 @@ export default function EmployeeListPage() {
                           )}
                         </td>
                         <td className="py-3.5 px-4 font-mono text-sm font-extrabold text-indigo-700 dark:text-indigo-300">
-                          {finalSalary.toLocaleString()}
+                          {payroll.issues.length ? "REVIEW REQUIRED" : finalSalary.toLocaleString()}
                         </td>
                         <td className="py-3.5 px-4 text-right">
                           <div className="inline-flex items-center gap-1.5">

@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import AdminShell from "@/components/AdminShell";
-import QrGeneratorCard from "@/components/QrGeneratorCard";
+import Link from "next/link";
 import { adminFetch } from "@/lib/adminFetch";
 import { formatPktTime12h, formatTime24to12 } from "@/lib/pktTime";
 import {
@@ -103,6 +103,7 @@ function getTodayPktDateString(): string {
 }
 
 export default function AdminDashboardPage() {
+  const [panel, setPanel] = useState<"attendance" | "leaves" | "devices">("attendance");
   const [selectedDate, setSelectedDate] = useState<string>(
     getTodayPktDateString
   );
@@ -219,7 +220,7 @@ export default function AdminDashboardPage() {
   const handleLeaveDecision = async (
     leaveId: string,
     status: "approved" | "rejected",
-    chosenType?: "paid" | "unpaid"
+    chosenType?: "paid" | "unpaid" | "short"
   ) => {
     setActionId(`leave-${leaveId}-${status}-${chosenType || ""}`);
     try {
@@ -235,7 +236,7 @@ export default function AdminDashboardPage() {
         setBannerMsg(
           status === "approved"
             ? `Leave approved (${
-                chosenType === "unpaid" ? "Unpaid Leave" : "Paid Leave"
+                chosenType === "short" ? "Short Leave" : chosenType === "unpaid" ? "Unpaid Leave" : "Paid Leave"
               }).`
             : "Leave request rejected."
         );
@@ -267,8 +268,9 @@ export default function AdminDashboardPage() {
         setBannerMsg(data.message || "Manual overtime saved.");
         setOtModalOpen(false);
         await fetchDashboardData();
-      }
-    } finally {
+      } else { setBannerMsg(data.error || "Manual overtime was not saved."); }
+    } catch(error) { setBannerMsg(error instanceof Error ? error.message : "Manual overtime failed."); }
+    finally {
       setSavingOt(false);
     }
   };
@@ -296,7 +298,7 @@ export default function AdminDashboardPage() {
 
     let displayStatus: "Present" | "Paid Leave" | "Unpaid Leave" | "Absent" =
       "Absent";
-    if (clockIn || Number(record?.overtime_hours || 0) > 0) {
+    if (clockIn) {
       displayStatus = "Present";
     } else if (leave?.leave_type === "paid") {
       displayStatus = "Paid Leave";
@@ -409,8 +411,9 @@ export default function AdminDashboardPage() {
           </div>
         </div>
 
+        <nav className="flex flex-wrap gap-3">{([['attendance','Attendance'],['leaves', 'Leave Requests'],['devices','Device Approvals']] as const).map(([key,label]) => <button key={key} aria-pressed={panel === key} className={`rounded-2xl px-5 py-3 ${panel === key ? 'btn-3d-primary' : 'btn-3d-glass'}`} onClick={() => setPanel(key)}>{label}</button>)}</nav>
         {/* PENDING EMPLOYEE LEAVE REQUESTS SECTION */}
-        <div className="glass-panel rounded-3xl overflow-hidden">
+        <div className={panel === "leaves" ? "glass-panel rounded-3xl overflow-hidden" : "hidden"}>
           <div className="px-6 py-5 border-b border-white/40 dark:border-white/10 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-2xl btn-3d-primary">
@@ -498,6 +501,7 @@ export default function AdminDashboardPage() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2 pt-2">
+                        {lv.leave_type === "short" && <button disabled={Boolean(actionId)} onClick={() => handleLeaveDecision(lv.id, "approved", "short")} className="btn-3d-primary rounded-2xl px-4 py-2.5 text-xs">Approve Short ({lv.hours_missed}h)</button>}
                         <button
                           onClick={() =>
                             handleLeaveDecision(lv.id, "approved", "paid")
@@ -538,7 +542,7 @@ export default function AdminDashboardPage() {
         </div>
 
         {/* DEVICE SESSION LOGIN / LOGOUT REQUESTS SECTION */}
-        <div className="glass-panel rounded-3xl overflow-hidden">
+        <div className={panel === "devices" ? "glass-panel rounded-3xl overflow-hidden" : "hidden"}>
           <div className="px-6 py-5 border-b border-white/40 dark:border-white/10 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-2xl btn-3d-primary">
@@ -709,7 +713,7 @@ export default function AdminDashboardPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className={panel === "attendance" ? "grid grid-cols-1 lg:grid-cols-3 gap-6" : "hidden"}>
           {/* Daily Attendance Table + Manual Overtime Button */}
           <div className="lg:col-span-2 glass-panel rounded-3xl overflow-hidden flex flex-col">
             <div className="p-5 sm:p-6 border-b border-white/40 dark:border-white/10 flex flex-wrap items-center justify-between gap-3">
@@ -850,13 +854,8 @@ export default function AdminDashboardPage() {
             </div>
           </div>
 
-          {/* Dynamic Workplace QR Code Card */}
-          <div>
-            <QrGeneratorCard
-              qrSecret={qrSecret}
-              onQrUpdated={(newToken) => setQrSecret(newToken)}
-            />
-          </div>
+          <div className="glass-panel rounded-3xl p-5 flex flex-col gap-3 self-start"><Link className="btn-3d-primary rounded-2xl p-4 text-center" href="/admin/qr-code">Open QR Code</Link><Link className="btn-3d-glass rounded-2xl p-4 text-center" href="/admin/settings">GPS Settings</Link><Link className="btn-3d-glass rounded-2xl p-4 text-center" href="/admin/leaves">Leave Management</Link></div>
+
         </div>
       </div>
 
@@ -885,7 +884,7 @@ export default function AdminDashboardPage() {
                       Add Manual Overtime
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                      Assign overtime hours for an employee on a specific date
+                      Sets the final overtime total for this date; does not add a second bonus.
                     </p>
                   </div>
                 </div>
@@ -935,7 +934,7 @@ export default function AdminDashboardPage() {
                   </label>
                   <input
                     type="number"
-                    step="0.25"
+                    step="0.01"
                     min="0"
                     max="24"
                     required

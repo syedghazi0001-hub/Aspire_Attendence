@@ -41,7 +41,7 @@ interface LeaveRecord {
   leave_category?: string;
   hours_missed: number;
   reason: string;
-  status: "pending" | "approved" | "rejected";
+  status: "pending" | "approved" | "rejected" | "cancelled";
   source?: "employee" | "manual";
   is_paid?: boolean;
   employee_name?: string;
@@ -59,7 +59,7 @@ interface LeaveRecord {
   };
 }
 
-type LeaveTab = "requests" | "manual" | "approved" | "rejected";
+type LeaveTab = "requests" | "manual" | "approved" | "rejected" | "cancelled";
 
 export default function AdminLeavesPage() {
   const [activeTab, setActiveTab] = useState<LeaveTab>("requests");
@@ -165,7 +165,7 @@ export default function AdminLeavesPage() {
 
   const handleLeaveDecision = async (
     id: string,
-    status: "approved" | "rejected",
+    status: "approved" | "rejected" | "cancelled",
     chosenType?: "paid" | "unpaid" | "short"
   ) => {
     setErrorMsg("");
@@ -195,7 +195,7 @@ export default function AdminLeavesPage() {
                 ? "Short Leave"
                 : "Paid Leave"
             }.`
-          : "Leave request rejected."
+          : status === "cancelled" ? "Leave cancelled. Attendance restored; salary preview recalculated." : "Leave request rejected."
       );
       await fetchLeavesAndEmployees();
     } catch (err: unknown) {
@@ -313,6 +313,7 @@ export default function AdminLeavesPage() {
       count: approvedLeavesList.length,
       icon: BadgeCheck,
     },
+    { id: "cancelled", label: "Cancelled", count: leaves.filter(l => l.status === "cancelled").length, icon: Ban },
     {
       id: "rejected",
       label: "Rejected",
@@ -328,7 +329,7 @@ export default function AdminLeavesPage() {
       ? manualLeavesList
       : activeTab === "approved"
       ? approvedLeavesList
-      : rejectedLeavesList;
+      : activeTab === "cancelled" ? leaves.filter(l => l.status === "cancelled") : rejectedLeavesList;
 
   return (
     <AdminShell
@@ -500,6 +501,7 @@ export default function AdminLeavesPage() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-white/40 dark:border-white/10">
+                        {lv.leave_type === "short" && <button disabled={Boolean(actionBusyId)} onClick={() => handleLeaveDecision(lv.id, "approved", "short")} className="btn-3d-primary rounded-2xl px-4 py-2.5 text-xs">Approve Short ({lv.hours_missed}h)</button>}
                         <button
                           onClick={() =>
                             handleLeaveDecision(lv.id, "approved", "paid")
@@ -663,8 +665,8 @@ export default function AdminLeavesPage() {
           </motion.div>
         )}
 
-        {/* TABLE FOR ACTIVE TAB */}
-        <div className="glass-panel rounded-3xl overflow-hidden">
+        {/* Requests already have review cards; no duplicate ledger to scroll. */}
+        <div className={activeTab === "requests" ? "hidden" : "glass-panel rounded-3xl overflow-hidden"}>
           <div className="px-6 py-5 border-b border-white/40 dark:border-white/10 flex items-center justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-2xl btn-3d-primary">
@@ -800,7 +802,7 @@ export default function AdminLeavesPage() {
                                 ? "bg-emerald-500/20 text-emerald-800 dark:text-emerald-200"
                                 : lv.status === "rejected"
                                 ? "bg-rose-500/20 text-rose-800 dark:text-rose-200"
-                                : "bg-amber-500/20 text-amber-900 dark:text-amber-200"
+                                : lv.status === "cancelled" ? "bg-slate-500/20 text-slate-600 dark:text-slate-300" : "bg-amber-500/20 text-amber-900 dark:text-amber-200"
                             }`}
                           >
                             {lv.status}
@@ -808,6 +810,8 @@ export default function AdminLeavesPage() {
                         </td>
                         <td className="py-3.5 px-5 text-right">
                           <div className="inline-flex items-center gap-1.5">
+                            {lv.status === "pending" && lv.leave_type === "short" && <button className="btn-3d-primary px-3 py-1 rounded-xl text-xs" onClick={() => handleLeaveDecision(lv.id, "approved", "short")}>Approve Short</button>}
+                            {lv.status === "approved" && <button disabled={Boolean(actionBusyId)} onClick={() => { if(confirm("Cancel this leave? This changes salary preview and restores attendance.")) handleLeaveDecision(lv.id, "cancelled"); }} className="btn-3d-amber px-3 py-1 rounded-xl text-xs">Cancel / Revoke</button>}
                             {lv.status !== "approved" && (
                               <>
                                 <button
@@ -854,7 +858,7 @@ export default function AdminLeavesPage() {
                             )}
                             <button
                               onClick={() => handleDeleteLeave(lv.id)}
-                              title="Delete Leave Record"
+                              title="Cancel Leave (record retained)"
                               className="btn-3d-glass p-1.5 rounded-xl text-rose-600 dark:text-rose-400"
                             >
                               <Trash2 className="w-4 h-4" />

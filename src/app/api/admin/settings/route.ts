@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { requireAdmin } from "@/lib/requireAdmin";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
@@ -56,10 +57,12 @@ export async function GET(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   const client = createAdminClientFromCloudflare(req, cfEnv);
   if (!client) {
-    return NextResponse.json({ settings: DEFAULT_SETTINGS });
+    return NextResponse.json({ error: "Settings unavailable." }, { status: 503 });
   }
 
   const { data, error } = await client
@@ -69,9 +72,7 @@ export async function GET(req: NextRequest, _context: any) {
     .maybeSingle();
 
   if (error || !data) {
-    return NextResponse.json({
-      settings: DEFAULT_SETTINGS,
-    });
+    return NextResponse.json({ error: error?.message || "Settings row missing. Run the schema setup." }, { status: 503 });
   }
 
   const lat = Number(
@@ -115,57 +116,16 @@ async function handleSaveSettings(req: NextRequest, cfEnv: Record<string, any>) 
 
   try {
     const body = await req.json();
-    const lat = parseFloat(
-      String(body.office_lat ?? body.lab_lat ?? body.lab_latitude ?? "32.64")
-    );
-    const lng = parseFloat(
-      String(body.office_lng ?? body.lab_lng ?? body.lab_longitude ?? "74.18")
-    );
-    const radiusMeters =
-      parseFloat(
-        String(body.radius_meters ?? body.allowed_radius_meters ?? "100")
-      );
-    const qrSecret = String(
-      body.qr_secret ||
-        body.qr_code_string ||
-        body.portal_qr_url ||
-        "LAB-DEFAULT-QR-SECRET-2026"
-    ).trim();
-
-    if (!Number.isFinite(radiusMeters) || radiusMeters < 1) return NextResponse.json({ error: "Radius must be at least 1 meter." }, { status: 400 });
-
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      return NextResponse.json(
-        { error: "Please enter valid numeric Latitude and Longitude." },
-        { status: 400 }
-      );
-    }
-
-    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-      return NextResponse.json(
-        {
-          error:
-            "Latitude must be between -90 and 90; Longitude between -180 and 180.",
-        },
-        { status: 400 }
-      );
-    }
-
-    const { data, error } = await client
-      .from("settings")
-      .upsert(
-        {
-          id: 1,
-          office_lat: lat,
-          office_lng: lng,
-          radius_meters: radiusMeters > 0 ? radiusMeters : 100,
-          qr_secret: qrSecret,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "id" }
-      )
-      .select()
-      .single();
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    const latRaw = body.office_lat ?? body.lab_lat ?? body.lab_latitude;
+    const lngRaw = body.office_lng ?? body.lab_lng ?? body.lab_longitude;
+    const radiusRaw = body.radius_meters ?? body.allowed_radius_meters;
+    const qrRaw = body.qr_secret ?? body.qr_code_string;
+    if (latRaw !== undefined) { const lat = Number(latRaw); if (!Number.isFinite(lat) || Math.abs(lat) > 90) return NextResponse.json({ error: "Invalid latitude." }, { status: 400 }); patch.office_lat = lat; }
+    if (lngRaw !== undefined) { const lng = Number(lngRaw); if (!Number.isFinite(lng) || Math.abs(lng) > 180) return NextResponse.json({ error: "Invalid longitude." }, { status: 400 }); patch.office_lng = lng; }
+    if (radiusRaw !== undefined) { const radius = Number(radiusRaw); if (!Number.isFinite(radius) || radius < 1) return NextResponse.json({ error: "Radius must be at least 1 meter." }, { status: 400 }); patch.radius_meters = radius; }
+    if (qrRaw !== undefined) { const qr = String(qrRaw).trim(); if (!qr) return NextResponse.json({ error: "QR token cannot be empty." }, { status: 400 }); patch.qr_secret = qr; }
+    const { data, error } = await client.from("settings").update(patch).eq("id", 1).select().single();
 
     if (error) {
       return NextResponse.json(
@@ -196,6 +156,8 @@ export async function PUT(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   return handleSaveSettings(req, cfEnv);
 }
@@ -206,6 +168,8 @@ export async function POST(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   return handleSaveSettings(req, cfEnv);
 }

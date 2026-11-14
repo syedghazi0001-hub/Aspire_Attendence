@@ -1,117 +1,99 @@
-# PulseHR Cloud v6.0 — Attendance, Device Lock & Payroll Portal
+# Aspire Attendance — verified repository update (v6.1)
 
-**Tech Stack:** Next.js 15 (App Router) • Supabase (PostgreSQL + Auth) • Cloudflare Workers (`@opennextjs/cloudflare`) • Tailwind CSS • Framer Motion (Apple Keynote 3D Glassmorphism UI)
+**Base repository:** https://github.com/syedghazi0001-hub/Aspire_Attendence
 
----
+**Base commit:** `f71b4e124a67e95d6c8fa280d2cec5a5c175978a`.
 
-## 1. Run the SQL Schema in Supabase (`supabase/schema.sql`)
+This complete source ZIP is based on that working repository, not a replacement template. GitHub has **not** been modified by this assistant. Secrets, installed dependencies, Git metadata, and generated build output are not included.
 
-1. Log in to your [Supabase Dashboard](https://supabase.com/dashboard) and open your project.
-2. Navigate to **SQL Editor** → click **New Query**.
-3. Copy the entire contents of **`supabase/schema.sql`** and click **Run**.
+## IMPORTANT: upload alone does NOT migrate Supabase
 
-### What `supabase/schema.sql` Sets Up (100% Non-Destructive):
-- **`public.users`**: Linked to `auth.users(id)` with `ON DELETE CASCADE`. Includes `full_name`, `employee_id` (unique), `role`, `monthly_salary`, `per_day_deduction`, `hourly_rate`, `overtime_rate`, `duty_start_time`, and `duty_end_time`.
-- **`public.handle_new_user()` Trigger on `auth.users`**: Automatically inserts newly created Auth users (`supabase.auth.admin.createUser`) into `public.users` using `NEW.raw_user_meta_data` **without any Foreign Key errors**.
-- **`public.attendance`**: Stores `user_id`, `date`, `clock_in`, `clock_out`, `status`, `overtime_hours`, and `missed_hours`.
-- **`public.leaves`**: Stores `user_id`, `date`, `leave_type` (`paid`/`unpaid`/`short`), `hours_missed`, and `status` (`pending`/`approved`/`rejected`).
-- **`public.active_sessions`**: Tracks strict single-device logins with `user_id`, `device_fingerprint`, `is_active`, and `approval_status` (`pending_login`, `approved`, `pending_logout`).
-- **`public.settings`**: Stores workplace GPS coordinates (`office_lat`, `office_lng`, `radius_meters`, `qr_secret`).
-- **RLS Policies**: Grants full `SELECT, INSERT, UPDATE, DELETE` access for Admin operations.
+GitHub upload may trigger your existing Cloudflare build, but it cannot apply database changes without an explicitly configured migration pipeline and credentials. This update deliberately fails closed rather than generating incomplete payroll if its required database functions are missing.
 
----
+### Safest one-time update
 
-## 2. Create Your First Admin Account in Supabase
-
-1. In your Supabase Dashboard, go to **Authentication → Users** → click **Add User → Create New User**.
-2. Enter your Admin Email (e.g., `admin@company.com`), Password, check **Auto Confirm User**, and click **Create User**.
-3. If you want to explicitly mark your account as `admin` in `public.users`, run this in the **SQL Editor**:
+1. **Back up your Supabase database** and save your current working Git commit.
+2. In Supabase **SQL Editor**, run the included **`supabase/schema.sql`** once. It includes the base schema and all upgrade steps; **do not separately run the migrations if you used the complete schema**. This preserves existing rows, expands leave statuses, adds the manual overtime override, financial audit log, consistent payroll input snapshot, leave/attendance guards, and access restrictions. Existing broad browser-write access is intentionally removed.
+3. Confirm your actual administrator profile has `role = 'admin'`. Replace the email below with your real admin email:
    ```sql
-   UPDATE public.users SET role = 'admin' WHERE id = (SELECT id FROM auth.users WHERE email = 'admin@company.com');
+   UPDATE public.users SET role = 'admin'
+   WHERE id = (SELECT id FROM auth.users WHERE email = 'your-admin@example.com');
    ```
-   Use your own administrator email in the SQL above.
+   Email login does **not** grant admin access by itself. Do not promote all employees or all users.
+4. Upload this ZIP's **contents**, preserving folder paths, to your GitHub repository. Keep your existing private environment variables and domain settings. Do not upload `.env.local` or service keys.
+5. Set Cloudflare build/runtime public variables `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and the **server-only runtime secret** `SUPABASE_SERVICE_ROLE_KEY`. Public variables must also be available during the Next.js build. Recommended build Node: **22.12+**.
+6. Build command: `npm ci --legacy-peer-deps && npx @opennextjs/cloudflare build`.
+7. Deployment command: `npx wrangler deploy` (or your already-working Cloudflare deployment workflow).
+8. Test with an administrator and two test employees before authorizing real payroll. See `TEST_REPORT.md`.
 
----
+**Alternative for an already-provisioned database:** run only the files in `supabase/migrations/` in filename order, then steps 3–8. All five files are needed, including Auth trigger hardening. Do not use `supabase db reset` on production.
 
-## 3. Push the Project to GitHub
+## Features and exact behavior
 
-Open a terminal inside the extracted project folder and run:
+### QR and GPS separated
+
+- Sidebar **QR Code** opens `/admin/qr-code`, with a large workplace code and **Regenerate QR Code** below it.
+- `/admin/settings` has only Latitude, Longitude, Radius and GPS capture controls.
+- Rotation writes only the QR token; saving GPS updates only GPS columns. Neither operation resets the other settings with stale defaults.
+- Rotation uses `crypto.randomUUID()`. The attendance API compares the scanned token with current database settings. Old tokens are rejected on subsequent validation. Already-in-flight requests may have validated the old token before rotation completed.
+
+### Averaged GPS, honest accuracy limits
+
+- Both employee scanning and Admin location capture use `watchPosition` with `enableHighAccuracy: true`, `maximumAge: 0`, `timeout: 10000`.
+- Collects **five fresh, distinct-timestamp readings**. Readings with reported accuracy worse than **30m** are ignored, with **“GPS signal weak, please wait.”**
+- Accepted coordinates are averaged. Watchers are cleared on completion, cancellation, permission denial, or the overall **30-second** collection deadline.
+- Distance enforcement uses the existing unrounded Haversine result, not its two-decimal display value, and adds **no hidden tolerance** to the Admin radius.
+- Haversine provides sub-meter **numeric resolution**, not guaranteed sub-meter positioning accuracy. GPS and the spherical Earth model have physical limitations; averaging cannot remove all bias or spoofing. A strict 1m radius can reject a genuine employee whose phone reports an imprecise location.
+
+### Strict leave attendance rules
+
+- Approved **Paid/Unpaid full-day leave** disables Check-In and Check-Out. API and database guards enforce the same rule, so bypassing a disabled button does not bypass the leave restriction.
+- A full-day leave cannot be newly approved over an existing check-in or overtime adjustment. Resolve the conflict explicitly; the system does not erase worked time.
+- Approved **Short Leave** permits attendance/check-out. Payroll deducts its approved `hours_missed × hourly_rate` **once**, from the leave ledger, not again from the attendance display field.
+- Employee can cancel today's/future approved leave. Short leave **after check-in** and all historical cancellations require Admin review to prevent retroactive self-awarded pay. Cancellation is an atomic database function that verifies the approved device session.
+- Admin can approve Paid, Unpaid or Short, switch Paid/Unpaid, and Cancel/Revoke. Cancellation changes `status` to **`cancelled`**; it does not delete the leave record.
+- Admin's legacy Delete Leave action now also performs soft cancellation. Deleting an employee still preserves the previous Auth/profile cascade-delete behavior; financial audit records retain before/after snapshots.
+- Cancelled/rejected/pending leaves never reduce pay or count as paid attendance.
+- Cancelling leave restores normal attendance eligibility; it does not reopen an already-completed day's timestamps or override GPS/QR/session requirements.
+- Employee cannot resubmit over an existing date's leave to turn approved leave back into pending. Admin can amend the retained date record.
+
+### Payroll safeguards
+
+- UI and PDF share `src/lib/payroll.ts`.
+- Payroll inputs are loaded together through one database snapshot, rather than combining unrelated requests from different moments.
+- Money is accumulated in integer minor units; rate/hour multiplication uses integer arithmetic with explicit half-up rounding to two currency decimals. Zero salary/rates are respected, not replaced by truthiness fallbacks.
+- Overtime calculation: `max(0, CheckOut - max(DutyEnd, CheckIn))`, with date-aware PKT timestamps. Early arrival is not overtime. The reported 12:51–12:59 daytime case returns zero, not negative hours.
+- **Manual overtime sets the final total for that date**, before or after check-out; it is not added to automatic overtime. Repeated saves do not double-credit it. The override remains explicit in `overtime_override_hours`. The API rejects ambiguous additive mode.
+- Manual OT-only rows do not count as attended days.
+- Duplicate/conflicting/invalid payroll inputs show **REVIEW REQUIRED** and block PDF export instead of silently producing a payment report.
+- Salary/rate edits recorded **during or after a report month** hold that month's report for effective-date review. The app does not invent a mid-month proration policy. Future unaffected months can use the new rates.
+- `public.payroll_change_log` records before/after changes to users, leaves and attendance, including cancellations. This is a database change log; its `database_role` is not a verified human operator identity, and it is not a tamper-proof external accounting ledger.
+- Anonymous browser writes and unauthenticated Admin API access are rejected. The Auth profile trigger cannot grant admin using user-editable metadata. Existing role assignments are preserved.
+
+## Payroll policy preserved — not invented
+
+**Preview = monthly base − approved unpaid days × configured day rate − approved short hours × configured hourly rate + overtime total × configured OT rate, floored at zero.**
+
+Paid leave has no deduction. This preserves the repository's explicit-leave model: unmarked days do **not** silently become unpaid absence. The app does not infer weekends, holidays, joining/leaving proration, tax, statutory overtime multipliers, or legally mandated leave entitlements. Confirm these policies with your payroll owner before using the preview for payment.
+
+These reports are **reviewable payroll previews, not locked/finalized payslips**. There is no approved rate-effective-date allocation UI or immutable finalized payroll period. Historic rate/attendance errors that predate this installation cannot be reconstructed from a new audit log. Reconcile old data and rate-history gaps with original records; do not assume deployment repairs all old salary data.
+
+The overtime helper covers overnight calculations. The existing attendance/session portal still keys daily records by PKT date; a full overnight check-in/check-out workflow across midnight needs separate acceptance testing and potentially a shift-date policy before overnight payroll is used.
+
+## Local checks
 
 ```bash
-git init
-git add .
-git commit -m "Initial commit: PulseHR Cloud v6.0 Next.js 15 + Supabase + Cloudflare Workers"
-git branch -M main
-git remote add origin https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME.git
-git push -u origin main
+npm ci --legacy-peer-deps
+npm test
+npx tsc --noEmit
+npx @opennextjs/cloudflare build
 ```
 
----
+Tests include an isolated embedded PostgreSQL instance; they do **not** connect to your Supabase database. Camera/GPS hardware, live Auth, RLS with your custom policies, two-device approval, and deployment secrets still require live acceptance tests.
 
-## 4. Connect to Cloudflare Workers & Configure Environment Variables
+## Research references
 
-This project includes `wrangler.toml`, `open-next.config.ts`, and `@opennextjs/cloudflare` out of the box. All API routes resolve environment variables from Cloudflare's `context.env` / `getCloudflareContext().env` with fallback to `process.env`.
+- Geolocation watch options and cleanup: [1](https://developer.mozilla.org/en-US/docs/Web/API/Geolocation_API/Using_the_Geolocation_API).
+- PostgreSQL statement snapshots and isolation: [1](https://www.postgresql.org/docs/current/transaction-iso.html).
 
-### Option A: Deploy via Cloudflare Dashboard (GitHub Integration)
-1. Log in to the [Cloudflare Dashboard](https://dash.cloudflare.com/) → **Workers & Pages** → **Create** → **Workers** → **Import a repository**.
-2. Select your GitHub repository.
-3. Configure the build settings:
-   - **Build command:** `npx @opennextjs/cloudflare build`
-   - **Deploy command:** `npx wrangler deploy`
-4. Under **Settings → Variables and Secrets** (and **Build Variables**), add these **3 Environment Variables**:
-   - `NEXT_PUBLIC_SUPABASE_URL` = `https://your-project-id.supabase.co`
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY` = `your-supabase-anon-public-key`
-   - `SUPABASE_SERVICE_ROLE_KEY` = `your-supabase-service-role-secret-key` *(Required for `supabase.auth.admin.createUser` when adding employees)*
-5. Click **Save and Deploy**.
-
-### Option B: Deploy via Wrangler CLI
-```bash
-npm install --legacy-peer-deps
-npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
-npm run deploy
-```
-
----
-
-## 5. Local Development
-
-1. Install dependencies:
-   ```bash
-   npm install --legacy-peer-deps
-   ```
-2. Copy `.env.example` to `.env.local` and fill in your keys:
-   ```env
-   NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
-   NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-public-key
-   SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-secret-key
-   ```
-3. Run the development server:
-   ```bash
-   npm run dev
-   ```
-4. Open [http://localhost:3000](http://localhost:3000).
-
-
-## v6 changes and verification
-
-- Employee tabs: Check-In, Check-Out, Apply for Leave, optional Reason, and live leave-history status.
-- Admin: named/identified leave review cards on the dashboard and four leave-ledger tabs; approve Paid/Unpaid or Reject.
-- Manual overtime: dashboard modal accepts Employee, PKT Date, Hours. Saving **sets/replaces** that date's stored overtime total. If entered before check-out, those hours are treated as a manual adjustment and added to the automatic overtime at check-out. For a final total correction, save after check-out.
-- Overtime uses max(0, CheckOut - max(DutyEnd, CheckIn)); negative historical values are clamped in the API and payroll. Early arrival adds no overtime. Overnight scheduled shifts are supported by the calculation helper.
-- GPS uses unrounded Haversine meters (mean Earth radius 6,371,008.8m), with an exact distance <= radius test and no extra tolerance. Radius accepts 1m, 10m, 100m, etc. GPS device accuracy is not guaranteed: a strict 1m geofence can reject legitimate users whose phone location is imprecise.
-- Generate New QR Code rotates the saved settings token; subsequent scans of older tokens are rejected. Static-vs-dynamic architecture is documented in QrGeneratorCard.tsx. QR rotation is manual, not timed auto-rotation.
-- IDs use EMP 01, EMP 02, through EMP 100 and beyond. The next ID is suggested; duplicate names (case/whitespace-insensitive) and IDs are rejected. Existing legacy IDs/profiles are not bulk-renamed.
-- Glass/crystal UI, lightweight typography, dark neutral surfaces, and Framer Motion transitions/modal animations.
-
-### Upgrade
-1. Back up your database and run the entire `supabase/schema.sql` in SQL Editor.
-2. Configure public Supabase URL/key for the frontend build and Worker runtime. Keep the service-role key as a **server-only Worker secret**, never a NEXT_PUBLIC variable.
-3. Install with `npm ci --legacy-peer-deps`, then run `npx @opennextjs/cloudflare build` and deploy with Wrangler.
-4. Existing data is not deleted by the schema. Legacy orphan profiles are retained; repair them before validating the added Auth FK. Duplicate legacy identities are preserved, but new duplicate writes are rejected.
-
-### Checks included
-- `node tests/regression.cjs`: 19 assertions for daytime/overnight overtime, the reported 12:51–12:59 case, strict sub-meter radius boundaries, invalid coordinates, and employee IDs.
-- `npx tsc --noEmit`: TypeScript check.
-- `npx @opennextjs/cloudflare build`: Next.js compilation plus Cloudflare Worker packaging.
-
-These are local build/regression checks, not a live Supabase/phone acceptance test. Before production, verify QR rotation, leave approval, employee creation/deletion, and two-device session approval using your own configured database. Review inherited broad RLS policies/API authorization before exposing the application publicly; this feature update is not a security audit.
+`TEST_REPORT.md` documents the checks performed, build warning and remaining dependency audit findings. `CHANGED_FILES.md` lists modifications relative to the base commit.

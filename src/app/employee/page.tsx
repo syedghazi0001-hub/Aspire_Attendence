@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
+import { getAveragedGps } from "@/lib/accurateGps";
 import QrScannerModal from "@/components/QrScannerModal";
 import ThemeToggle from "@/components/ThemeToggle";
 import { supabase } from "@/lib/supabaseClient";
@@ -86,10 +87,16 @@ export default function EmployeePortalPage() {
   const [activeTab, setActiveTab] = useState<"clock_in" | "clock_out" | "leave">("clock_in");
   const [leaveHistory, setLeaveHistory] = useState<any[]>([]);
 
+  const [leaveVerified, setLeaveVerified] = useState(false);
+  const gpsAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => gpsAbort.current?.abort(), []);
+  const fullDayLeave = leaveHistory.find(l => l.date === getTodayIsoDate() && l.status === "approved" && ["paid", "unpaid"].includes(l.leave_type));
+
   // Leave Application State
   const [leaveType, setLeaveType] = useState<"paid" | "unpaid" | "short">(
     "paid"
   );
+  const [shortHours, setShortHours] = useState("2");
   const [leaveDate, setLeaveDate] = useState<string>(getTodayIsoDate);
   const [leaveReason, setLeaveReason] = useState<string>("");
   const [submittingLeave, setSubmittingLeave] = useState<boolean>(false);
@@ -116,6 +123,7 @@ export default function EmployeePortalPage() {
           )}`
         );
         const data = await res.json();
+        if (res.status >= 500) return;
 
         if (data.rejected_by_admin || data.approval_status === "rejected") {
           setBlockedMessage(
@@ -204,12 +212,22 @@ export default function EmployeePortalPage() {
   }, [sessionToken, fingerprint, employee?.id, verifySessionStatus]);
 
   useEffect(() => {
-    if (!employee || !sessionToken || activeTab !== "leave") return;
-    const load = () => fetch(`/api/employee/leave?user_id=${encodeURIComponent(employee.id)}&session_token=${encodeURIComponent(sessionToken)}&fp=${encodeURIComponent(fingerprint)}`, { cache: "no-store" }).then(r => r.json()).then(d => setLeaveHistory(d.leaves || [])).catch(() => null);
+    if (!employee || !sessionToken) return;
+    const load = () => fetch(`/api/employee/leave?user_id=${encodeURIComponent(employee.id)}&session_token=${encodeURIComponent(sessionToken)}&fp=${encodeURIComponent(fingerprint)}`, { cache: "no-store" }).then(r => r.json()).then(d => { if (!Array.isArray(d.leaves) || d.error) throw new Error(d.error || "Leave check failed"); setLeaveHistory(d.leaves); setLeaveVerified(true); }).catch(() => setLeaveVerified(false));
     load();
     const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
   }, [employee?.id, sessionToken, fingerprint, activeTab]);
+
+  const cancelLeave = async (id: string) => {
+    if (!employee || !sessionToken || !confirm("Cancel this approved leave? Salary preview will be recalculated.")) return;
+    try {
+      const response = await fetch("/api/employee/leave", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, user_id: employee.id, session_token: sessionToken, device_fingerprint: fingerprint }) });
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || "Cancellation failed.");
+      setLeaveHistory(history => history.map(l => l.id === id ? { ...l, status: "cancelled" } : l));
+      setLeaveMessage({ type: "success", text: data.message });
+    } catch(error) { setLeaveMessage({ type: "error", text: error instanceof Error ? error.message : "Cancellation failed." }); }
+  };
 
   const handleRequestLogout = async () => {
     if (!sessionToken || !employee) return;
@@ -283,7 +301,7 @@ export default function EmployeePortalPage() {
           leave_type: leaveType,
           date: leaveDate,
           reason: leaveReason.trim(),
-          hours_missed: leaveType === "short" ? 2 : 0,
+          hours_missed: leaveType === "short" ? Number(shortHours) : 0,
         }),
       });
 
@@ -314,7 +332,7 @@ export default function EmployeePortalPage() {
   const handleQrDecoded = useCallback(
     async (decodedQrText: string) => {
       setScannerOpen(false);
-      if (!sessionToken || !employee) return;
+      if (!sessionToken || !employee || !leaveVerified || fullDayLeave) return;
 
       setProcessingScan(true);
       setFeedback(null);
@@ -329,9 +347,10 @@ export default function EmployeePortalPage() {
         return;
       }
 
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          try {
+      gpsAbort.current?.abort();
+      gpsAbort.current = new AbortController();
+      try {
+        const position = await getAveragedGps(message => setFeedback({ type: "error", title: "GPS Verification", message }), gpsAbort.current.signal);
             const response = await fetch("/api/employee/attendance", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -379,41 +398,12 @@ export default function EmployeePortalPage() {
                   : "Clock-Out Recorded",
               message: result.message,
             });
-          } catch {
-            setFeedback({
-              type: "error",
-              title: "Network Error",
-              message: "Could not reach attendance server. Please try again.",
-            });
-          } finally {
-            setProcessingScan(false);
-          }
-        },
-        (geoErr) => {
-          setProcessingScan(false);
-          let reason =
-            "Location permission is required to verify you are at the workplace.";
-          if (geoErr.code === geoErr.PERMISSION_DENIED) {
-            reason =
-              "GPS Location Permission Denied. Please enable Location access in your browser settings.";
-          } else if (geoErr.code === geoErr.TIMEOUT) {
-            reason =
-              "GPS signal timed out. Please step near a window and try scanning again.";
-          }
-          setFeedback({
-            type: "error",
-            title: "GPS Verification Failed",
-            message: reason,
-          });
-        },
-        {
-          enableHighAccuracy: true,
-          timeout: 12000,
-          maximumAge: 0,
-        }
-      );
+      } catch(error) {
+        setFeedback({ type: "error", title: "Verification Failed", message: error instanceof Error ? error.message : "Could not record attendance." });
+      } finally { setProcessingScan(false); }
+
     },
-    [activeTab, sessionToken, employee, fingerprint, clearLocalSessionAndRedirect]
+    [activeTab, sessionToken, employee, fingerprint, clearLocalSessionAndRedirect, leaveVerified, fullDayLeave]
   );
 
   if (approvalStatus === "checking" || !employee) {
@@ -557,8 +547,10 @@ export default function EmployeePortalPage() {
           {(approvalStatus === "approved" ||
             approvalStatus === "pending_logout") && (
             <div className="space-y-5">
+              {fullDayLeave && <div role="alert" className="glass-panel rounded-2xl p-4 text-sm">Approved {fullDayLeave.leave_type} leave today. Check-In and Check-Out are disabled. <button className="btn-3d-glass rounded-xl px-4 py-2 ml-2" onClick={() => cancelLeave(fullDayLeave.id)}>Cancel Leave</button></div>}
+              {!leaveVerified && <p role="status">Checking leave status… Attendance stays disabled until verified.</p>}
               <nav className="glass-panel rounded-3xl p-3 flex flex-wrap gap-3" aria-label="Employee actions">
-                {([['clock_in', 'Check-In'], ['clock_out', 'Check-Out'], ['leave', 'Apply for Leave']] as const).map(([tab, label]) => <button key={tab} onClick={() => setActiveTab(tab)} aria-pressed={activeTab === tab} className={`rounded-2xl px-5 py-3 text-sm ${activeTab === tab ? 'btn-3d-primary' : 'btn-3d-glass'}`}>{label}</button>)}
+                {([['clock_in', 'Check-In'], ['clock_out', 'Check-Out'], ['leave', 'Apply for Leave']] as const).map(([tab, label]) => <button key={tab} onClick={() => setActiveTab(tab)} disabled={tab !== "leave" && (!leaveVerified || Boolean(fullDayLeave))} aria-pressed={activeTab === tab} className={`rounded-2xl px-5 py-3 text-sm ${activeTab === tab ? 'btn-3d-primary' : 'btn-3d-glass'}`}>{label}</button>)}
               </nav>
               {/* Left Card: Attendance & QR Scanner */}
               <div className={`glass-panel rounded-3xl p-6 sm:p-7 flex flex-col justify-between space-y-5 ${activeTab === "leave" ? "hidden" : ""}`}>
@@ -687,7 +679,7 @@ export default function EmployeePortalPage() {
                     setFeedback(null);
                     setScannerOpen(true);
                   }}
-                  disabled={processingScan || Boolean(clockOutVal) || (activeTab === "clock_in" ? Boolean(clockInVal) : !clockInVal)}
+                  disabled={!leaveVerified || Boolean(fullDayLeave) || processingScan || Boolean(clockOutVal) || (activeTab === "clock_in" ? Boolean(clockInVal) : !clockInVal)}
                   className="w-full rounded-2xl btn-3d-primary disabled:opacity-50 py-4 px-6 text-sm sm:text-base font-medium flex items-center justify-center gap-3"
                 >
                   {processingScan ? (
@@ -753,6 +745,7 @@ export default function EmployeePortalPage() {
                   </AnimatePresence>
 
                   <form onSubmit={handleApplyLeave} className="space-y-4">
+                    {leaveType === "short" && <label className="block text-sm">Hours missed<input required min="0.01" max="24" step="0.01" type="number" value={shortHours} onChange={e => setShortHours(e.target.value)} className="glass-input w-full rounded-2xl p-3 mt-2" /></label>}
                     <div>
                       <label className="block text-xs font-medium uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-1.5">
                         Leave Type
@@ -818,7 +811,7 @@ export default function EmployeePortalPage() {
                       )}
                     </motion.button>
                   </form>
-                  <section className="mt-6 space-y-3"><h3 className="text-base font-medium">Your Leave History</h3>{leaveHistory.length === 0 ? <p className="text-sm text-slate-500">No applications yet.</p> : leaveHistory.map(l => <div key={l.id} className="glass-card-3d rounded-2xl p-4 text-sm flex flex-wrap justify-between gap-2"><span>{l.date} · {l.leave_category || l.leave_type}</span><span className="capitalize">{l.status} · {l.is_paid ? 'Paid' : l.leave_type === 'short' ? 'Short / hourly' : 'Unpaid'}</span></div>)}</section>
+                  <section className="mt-6 space-y-3"><h3 className="text-base font-medium">Your Leave History</h3>{leaveHistory.length === 0 ? <p className="text-sm text-slate-500">No applications yet.</p> : leaveHistory.map(l => <div key={l.id} className="glass-card-3d rounded-2xl p-4 text-sm flex flex-wrap justify-between gap-2"><span>{l.date} · {l.leave_category || l.leave_type}</span><span className="capitalize">{l.status} · {l.is_paid ? 'Paid' : l.leave_type === 'short' ? 'Short / hourly' : 'Unpaid'}</span>{l.status === 'approved' && l.date >= getTodayIsoDate() && <button type="button" className="btn-3d-glass rounded-xl px-3 py-1" onClick={() => cancelLeave(l.id)}>Cancel Leave</button>}</div>)}</section>
                 </div>
               </div>
             </div>

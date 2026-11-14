@@ -1,7 +1,9 @@
+import { calculatePayroll } from "@/lib/payroll";
 import { jsPDF } from "jspdf";
 import { formatPktTime12h, formatTime24to12 } from "@/lib/pktTime";
 
 export interface PdfEmployeeInfo {
+  requires_rate_review?: boolean;
   full_name: string;
   employee_id: string;
   monthly_salary: number;
@@ -48,56 +50,13 @@ export function generateMonthlySalaryPdf({
     format: "a4",
   });
 
-  const basicSalary = Number(
-    employee.basic_salary || employee.monthly_salary || 0
-  );
+  const summary = calculatePayroll(employee, month, attendanceRows, leaveRows);
+  if (summary.issues.length) throw new Error(summary.issues.join(" "));
+  const { basicSalary, daysAttended, totalPresentDays, totalAbsentDays, shortLeaveHours, totalOvertimeHours, unpaidDeduction, shortLeaveDeduction, overtimePay, finalSalary, paidLeaves: paidLeavesCount, totalAbsentDays: unpaidLeavesCount } = summary;
   const perDayDeduction = Number(employee.per_day_deduction || 0);
   const hourlyRate = Number(employee.hourly_rate || 0);
-  const overtimeRate = Number(employee.overtime_rate || hourlyRate || 0);
-
-  const approvedLeaves = leaveRows.filter((l) => l.status === "approved");
-  const paidLeavesCount = approvedLeaves.filter(
-    (l) => l.leave_type === "paid"
-  ).length;
-  const unpaidLeavesCount = approvedLeaves.filter(
-    (l) => l.leave_type === "unpaid"
-  ).length;
-  const shortLeaveHours = approvedLeaves
-    .filter((l) => l.leave_type === "short")
-    .reduce((sum, l) => sum + Number(l.hours_missed || 0), 0);
-
-  const daysAttended = attendanceRows.length;
-  // Paid Leave = No deduction, no absent mark (counts toward Total Present Days)
-  const totalPresentDays = daysAttended + paidLeavesCount;
-  // Unpaid Leave = Per-day deduction applied, absent mark
-  const totalAbsentDays = unpaidLeavesCount;
-
-  const totalOvertimeHours =
-    Math.round(
-      attendanceRows.reduce(
-        (sum, r) => sum + Number(r.overtime_hours || 0),
-        0
-      ) * 100
-    ) / 100;
-
-  const unpaidDeduction =
-    Math.round(totalAbsentDays * perDayDeduction * 100) / 100;
-  const shortLeaveDeduction =
-    Math.round(shortLeaveHours * hourlyRate * 100) / 100;
-  const overtimePay =
-    Math.round(totalOvertimeHours * overtimeRate * 100) / 100;
-
-  const finalSalary = Math.max(
-    0,
-    Math.round(
-      (basicSalary -
-        unpaidDeduction -
-        shortLeaveDeduction +
-        overtimePay) *
-        100
-    ) / 100
-  );
-
+  const overtimeRate = Number(employee.overtime_rate ?? 0);
+  const approvedLeaves = leaveRows.filter(l => l.status === "approved" && l.date.startsWith(month + "-"));
   // Header Banner (Keynote Slate-Indigo)
   doc.setFillColor(39, 53, 73);
   doc.rect(0, 0, 210, 38, "F");
@@ -105,7 +64,7 @@ export function generateMonthlySalaryPdf({
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
-  doc.text("MONTHLY ATTENDANCE & SALARY REPORT", 14, 15);
+  doc.text("MONTHLY PAYROLL PREVIEW - REVIEW BEFORE PAYMENT", 14, 15);
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9.5);
@@ -213,7 +172,7 @@ export function generateMonthlySalaryPdf({
         doc.rect(14, y, 182, 7.5, "F");
       }
 
-      const otHrs = Number(row.overtime_hours || 0);
+      const otHrs = Math.max(0, Number(row.overtime_hours || 0));
       const missedHrs = Number(row.missed_hours || 0);
       const rowOtPay = Math.round(otHrs * overtimeRate * 100) / 100;
 

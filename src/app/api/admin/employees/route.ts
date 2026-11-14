@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { requireAdmin } from "@/lib/requireAdmin";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
@@ -81,6 +82,8 @@ export async function GET(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   try {
     const { supabaseAdmin } = createPerRequestSupabaseAdmin(req, cfEnv);
@@ -138,6 +141,8 @@ export async function POST(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   try {
     // 1. Get Cloudflare Worker environment via getCloudflareContext() & create per-request client
@@ -155,6 +160,11 @@ export async function POST(req: NextRequest, _context: any) {
     }
 
     const body = await req.json();
+    for (const field of ["monthly_salary", "basic_salary", "per_day_deduction", "hourly_rate", "overtime_rate"]) {
+      if (body[field] !== undefined && body[field] !== "" && (!Number.isFinite(Number(body[field])) || Number(body[field]) < 0)) return NextResponse.json({ error: `${field} must be a finite non-negative number.` }, { status: 400 });
+    }
+    for (const field of ["duty_start_time", "duty_end_time"]) if (body[field] && !/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(String(body[field]))) return NextResponse.json({ error: "Duty times must be valid HH:MM values." }, { status: 400 });
+
     const fullName = String(body.full_name || "")
       .trim()
       .replace(/\s+/g, " ");
@@ -445,6 +455,8 @@ export async function PUT(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   try {
     const { supabaseAdmin, hasServiceRole } = createPerRequestSupabaseAdmin(req, cfEnv);
@@ -456,6 +468,11 @@ export async function PUT(req: NextRequest, _context: any) {
     }
 
     const body = await req.json();
+    for (const field of ["monthly_salary", "basic_salary", "per_day_deduction", "hourly_rate", "overtime_rate"]) {
+      if (body[field] !== undefined && body[field] !== "" && (!Number.isFinite(Number(body[field])) || Number(body[field]) < 0)) return NextResponse.json({ error: `${field} must be a finite non-negative number.` }, { status: 400 });
+    }
+    for (const field of ["duty_start_time", "duty_end_time"]) if (body[field] && !/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(String(body[field]))) return NextResponse.json({ error: "Duty times must be valid HH:MM values." }, { status: 400 });
+
     const id = body.id;
     const fullName = String(body.full_name || "")
       .trim()
@@ -604,6 +621,8 @@ export async function DELETE(req: NextRequest, _context: any) {
     const { env } = getCloudflareContext();
     cfEnv = env as Record<string, any>;
   } catch { /* Local development uses process.env below. */ }
+  const denied = await requireAdmin(req, cfEnv);
+  if (denied) return denied;
 
   try {
     const { supabaseAdmin, hasServiceRole } = createPerRequestSupabaseAdmin(req, cfEnv);

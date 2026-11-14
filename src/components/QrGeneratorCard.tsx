@@ -24,7 +24,7 @@ import {
  *    reuse that same QR image forever unless manually edited in database settings.
  *
  * 2. HOW DYNAMIC QR CODE WORKS NOW:
- *    - When the Admin clicks "Generate New QR Code", this component creates a
+ *    - When the Admin clicks "Regenerate QR Code", this component creates a
  *      cryptographically unique token (e.g., "PULSE-QR-2026-9F8A2C4D") and
  *      immediately saves it to `public.settings.qr_secret` in Supabase.
  *    - During employee Check-In / Check-Out (`/api/employee/attendance`), the
@@ -92,52 +92,18 @@ export default function QrGeneratorCard({
     setGenerating(true);
     setStatusBanner("");
 
-    const randomBytes = new Uint8Array(4);
-    if (typeof window !== "undefined" && window.crypto?.getRandomValues) {
-      window.crypto.getRandomValues(randomBytes);
-    } else {
-      for (let i = 0; i < 4; i++) {
-        randomBytes[i] = Math.floor(Math.random() * 256);
-      }
-    }
-    const hexSuffix = Array.from(randomBytes, (b) =>
-      b.toString(16).padStart(2, "0")
-    )
-      .join("")
-      .toUpperCase();
-    const timePart = Date.now().toString(36).slice(-4).toUpperCase();
-    const newUniqueQrToken = `PULSE-QR-${timePart}-${hexSuffix}`;
-
+    const newUniqueQrToken = `PULSE-QR-${crypto.randomUUID()}`;
     try {
-      // Fetch current settings first so we preserve existing GPS coordinates & radius
-      const getRes = await adminFetch("/api/admin/settings");
-      const getJson = await getRes.json().catch(() => ({}));
-      const currentSettings = getJson?.settings || {};
-
-      const payload = {
-        office_lat:
-          labLat !== undefined && !Number.isNaN(labLat) && labLat !== 0
-            ? labLat
-            : Number(currentSettings.office_lat ?? currentSettings.lab_lat ?? 32.64),
-        office_lng:
-          labLng !== undefined && !Number.isNaN(labLng) && labLng !== 0
-            ? labLng
-            : Number(currentSettings.office_lng ?? currentSettings.lab_lng ?? 74.18),
-        radius_meters:
-          radiusMeters !== undefined &&
-          !Number.isNaN(radiusMeters) &&
-          radiusMeters > 0
-            ? radiusMeters
-            : Number(currentSettings.radius_meters ?? 100),
-        qr_secret: newUniqueQrToken,
-        qr_code_string: newUniqueQrToken,
-      };
-
+      const payload = { qr_secret: newUniqueQrToken };
       const saveRes = await adminFetch("/api/admin/settings", {
         method: "PUT",
         body: JSON.stringify(payload),
       });
 
+      if (!saveRes.ok) {
+        const result = await saveRes.json().catch(() => ({}));
+        throw new Error(result.error || "QR regeneration failed.");
+      }
       if (saveRes.ok) {
         setActiveToken(newUniqueQrToken);
         await renderQrImage(newUniqueQrToken);
@@ -149,6 +115,7 @@ export default function QrGeneratorCard({
         );
       }
     } catch (err) {
+      setStatusBanner(`Failed: ${err instanceof Error ? err.message : "QR regeneration failed."}`);
       console.error("Error saving new dynamic QR token:", err);
     } finally {
       setGenerating(false);
@@ -193,28 +160,14 @@ export default function QrGeneratorCard({
             initial={{ opacity: 0, y: -6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
-            className="rounded-2xl bg-emerald-500/15 border border-emerald-400/35 px-3.5 py-2.5 text-xs font-medium text-emerald-800 dark:text-emerald-200 flex items-center gap-2"
+            role="status"
+            className={`rounded-2xl border px-3.5 py-2.5 text-xs font-medium flex items-center gap-2 ${statusBanner.startsWith("Failed:") ? "border-rose-400/35 text-rose-600 dark:text-rose-200" : "border-emerald-400/35 text-emerald-800 dark:text-emerald-200"}`}
           >
             <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
             <span>{statusBanner}</span>
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* Primary Action: Generate New Dynamic QR Code */}
-      <motion.button
-        whileHover={{ scale: 1.01 }}
-        whileTap={{ scale: 0.98 }}
-        type="button"
-        onClick={handleGenerateNewDynamicQr}
-        disabled={generating}
-        className="w-full rounded-2xl btn-3d-primary py-3 px-4 text-xs sm:text-sm font-medium inline-flex items-center justify-center gap-2 disabled:opacity-60"
-      >
-        <RefreshCw className={`w-4 h-4 ${generating ? "animate-spin" : ""}`} />
-        <span>
-          {generating ? "Rotating QR Token..." : "Generate New QR Code"}
-        </span>
-      </motion.button>
 
       {qrDataUrl && (
         <motion.div
@@ -229,7 +182,7 @@ export default function QrGeneratorCard({
             <img
               src={qrDataUrl}
               alt="Workplace Dynamic QR Code"
-              className="w-48 h-48 object-contain"
+              className="w-[min(70vw,420px)] h-[min(70vw,420px)] object-contain"
             />
           </div>
 
@@ -253,21 +206,36 @@ export default function QrGeneratorCard({
         </motion.div>
       )}
 
+      {/* Primary Action: Generate New Dynamic QR Code */}
+      <motion.button
+        whileHover={{ scale: 1.01 }}
+        whileTap={{ scale: 0.98 }}
+        type="button"
+        onClick={handleGenerateNewDynamicQr}
+        disabled={generating}
+        className="w-full rounded-2xl btn-3d-primary py-3 px-4 text-xs sm:text-sm font-medium inline-flex items-center justify-center gap-2 disabled:opacity-60"
+      >
+        <RefreshCw className={`w-4 h-4 ${generating ? "animate-spin" : ""}`} />
+        <span>
+          {generating ? "Rotating QR Token..." : "Regenerate QR Code"}
+        </span>
+      </motion.button>
+
       {/* Static vs Dynamic Explanation Card */}
-      <div className="rounded-2xl glass-input p-3.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300 space-y-1">
-        <div className="font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+      <details className="rounded-2xl glass-input p-3.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300 space-y-1">
+        <summary className="font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
           <Info className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
           <span>Static vs. Dynamic QR Security</span>
-        </div>
+        </summary>
         <p>
           <strong>Static:</strong> Remains valid as long as you keep it mounted
           at the entrance.{" "}
           <strong>Dynamic:</strong> Clicking{" "}
-          <em>&ldquo;Generate New QR Code&rdquo;</em> rotates the database
+          <em>&ldquo;Regenerate QR Code&rdquo;</em> rotates the database
           secret in real time and <strong>instantly invalidates</strong> any old
           printed or photographed QR code.
         </p>
-      </div>
+      </details>
     </div>
   );
 }

@@ -12,6 +12,7 @@ import {
   Users,
   CalendarClock,
   Settings,
+  QrCode,
   LogOut,
   AlertTriangle,
   Sparkles,
@@ -62,6 +63,7 @@ export default function AdminShell({
   };
 
   const navItems = [
+    { label: "QR Code", href: "/admin/qr-code", icon: QrCode },
     {
       label: "Dashboard",
       href: "/admin",
@@ -83,7 +85,7 @@ export default function AdminShell({
       icon: CalendarClock,
     },
     {
-      label: "GPS & QR Settings",
+      label: "GPS Settings",
       href: "/admin/settings",
       icon: Settings,
     },

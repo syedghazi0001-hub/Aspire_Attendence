@@ -1,6 +1,6 @@
 {
   "name": "lab-qr-gps-attendance-portal",
-  "version": "6.2.0",
+  "version": "6.2.1",
   "private": true,
   "scripts": {
     "dev": "next dev -H 0.0.0.0 -p 3000",
@@ -9,7 +9,7 @@
     "lint": "next lint",
     "cf:build": "opennextjs-cloudflare build",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "deploy": "npm run cf:build && wrangler deploy --keep-vars",
     "typecheck": "tsc --noEmit",
     "test": "node tests/regression.cjs && node tests/financial-regression.cjs && node tests/database-regression.cjs && node tests/cloudflare-runtime.cjs"
   },

@@ -1,7 +1,8 @@
+import { APP_RELEASE } from "./release";
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
-/** Only Worker bindings supplied by a request handler. Never process.env. */
+/** Only Worker bindings supplied by a request handler. No build-time fallback. */
 export interface RuntimeEnv {
   NEXT_PUBLIC_SUPABASE_URL?: string;
   SUPABASE_URL?: string;
@@ -34,7 +35,7 @@ export function readSupabaseConfig(env: RuntimeEnv, options: { publicOnly?: bool
   try { const parsed = new URL(url); validUrl = ["http:", "https:"].includes(parsed.protocol) && !url.includes("your-project-id") && !url.includes("placeholder-project"); } catch { /* reported below */ }
   if (!validUrl) invalid.push("NEXT_PUBLIC_SUPABASE_URL");
   const badAnon = !anonKey || anonKey.includes("your-anon") || anonKey.startsWith("sb_secret_") || jwtRole(anonKey) === "service_role" || Boolean(serviceRoleKey && anonKey === serviceRoleKey);
-  if ((options.publicOnly || options.requireAnon || anonKey) && badAnon) invalid.push("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+  if ((options.publicOnly || options.requireAnon) && badAnon) invalid.push("NEXT_PUBLIC_SUPABASE_ANON_KEY");
   if (!options.publicOnly && (!serviceRoleKey || serviceRoleKey.includes("your-service") || serviceRoleKey.startsWith("sb_publishable_") || jwtRole(serviceRoleKey) === "anon")) invalid.push("SUPABASE_SERVICE_ROLE_KEY");
   if (invalid.length) throw new SupabaseConfigurationError(invalid);
   return { url, anonKey, serviceRoleKey };
@@ -44,13 +45,14 @@ export function createRuntimeClients(env: RuntimeEnv, requireAnon = false) {
   const config = readSupabaseConfig(env, { requireAnon });
   const options = { auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false } };
   const client = createClient(config.url, config.serviceRoleKey, options);
-  const anonClient = config.anonKey ? createClient(config.url, config.anonKey, options) : client;
+  const anonClient = requireAnon ? createClient(config.url, config.anonKey, options) : client;
   return { client, anonClient };
 }
 export function runtimeConfigurationResponse(error: unknown) {
   return NextResponse.json({
     error: error instanceof SupabaseConfigurationError ? error.message : "Cloudflare request bindings are unavailable.",
     code: "SUPABASE_CONFIGURATION_ERROR",
+    release: APP_RELEASE,
     ...(error instanceof SupabaseConfigurationError ? { bindings: error.invalidBindings } : {}),
-  }, { status: 503, headers: { "Cache-Control": "no-store" } });
+  }, { status: 503, headers: { "Cache-Control": "no-store", "X-Aspire-Release": APP_RELEASE } });
 }

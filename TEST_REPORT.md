@@ -1,4 +1,4 @@
-# v6.2 verification report
+# v6.2.1 verification report
 
 ## Passed
 
@@ -38,3 +38,16 @@ PGlite excludes pgcrypto installation and stubs random-byte generation. It does 
 - OpenNext build retains an existing non-fatal duplicate-case warning in dependency-generated PDF bundle code. Build exits successfully.
 - Previous release dependency audit had 3 moderate OpenNext/glob/minimatch findings; this runtime fix does not claim a full security audit or a zero-advisory dependency tree.
 - No payroll-policy expansion, historical salary reconstruction, mid-month proration policy or finalized payroll-period lock is claimed.
+
+
+## v6.2.1 additional checks
+
+- No production source occurrence of the build-process environment accessor; all existing API routes audited for request-level Cloudflare context use.
+- Existing UI components and Admin/Employee pages have no source changes relative to base commit `19b8a2b`.
+- `keep_vars = true` and deploy `--keep-vars` regression assertions pass.
+- Health endpoint reports the new release and no credential values, without constructing a Supabase client.
+- Local workerd with runtime bindings: health 200, public config 200, Admin without bearer 401 (authorization retained), empty employee login 400 (input validation reached).
+- Local workerd without runtime bindings: health 503 with the three expected binding names.
+- TypeScript initially traversed local Wrangler-generated artifacts after runtime testing; compiler includes/excludes were narrowed to actual source, root config types and Next route types. `npx tsc --noEmit` then passed, as did the final OpenNext build.
+- Master schema is unchanged from the already-consolidated repository schema; full SQL regression suite passed. Superseded migration files are excluded from this source package. Existing test rows survived re-running the master schema.
+- All temporary local Workers were stopped. No production deployment, real Supabase password validation, or dashboard variable-retention experiment was performed.

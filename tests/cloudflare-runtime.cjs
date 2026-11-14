@@ -36,6 +36,7 @@ const cache={};function load(file){const full=path.resolve(file);if(cache[full])
  if(id==='@opennextjs/cloudflare')return {getCloudflareContext:()=>{if(!workerEnv)throw new Error('no bindings');return {env:workerEnv}}};
  if(id==='@supabase/supabase-js')return sdk;
  if(id.startsWith('@/'))return load('src/'+id.slice(2)+'.ts');
+ if(id.startsWith('./')) return load(path.resolve(path.dirname(full),id)+'.ts');
  return require(id);
 },m,m.exports);return m.exports;}
 const {NextRequest}=require('next/server');
@@ -43,8 +44,14 @@ const req=(url,body,admin=false)=>new NextRequest('https://worker.test'+url,{met
 (async()=>{
  // Build-process values must never override request bindings.
  process.env.NEXT_PUBLIC_SUPABASE_URL='https://wrong-build-project.supabase.co';process.env.SUPABASE_SERVICE_ROLE_KEY='BUILD-SECRET-NOT-RUNTIME';
+ const health=load('src/app/api/health/route.ts');
  const login=load('src/app/api/employee/login/route.ts');const settings=load('src/app/api/admin/settings/route.ts');const publicConfig=load('src/app/api/public-config/route.ts');const attendance=load('src/app/api/employee/attendance/route.ts');
  assert.equal(creates.length,0); // no module-global server Supabase clients
+ assert.match(fs.readFileSync('wrangler.toml','utf8'), /^keep_vars\s*=\s*true/m);
+ assert.ok(require('../package.json').scripts.deploy.includes('--keep-vars'));
+ workerEnv={};let healthResponse=await health.GET(req('/api/health'),{});assert.equal(healthResponse.status,503);let healthData=await healthResponse.json();assert.equal(healthData.release,'6.2.1-runtime-bindings');assert.ok(healthData.bindings.includes('NEXT_PUBLIC_SUPABASE_URL'));assert.equal(creates.length,0);
+ workerEnv=configured('health-worker');healthResponse=await health.GET(req('/api/health'),{});assert.equal(healthResponse.status,200);healthData=await healthResponse.json();assert.equal(healthData.configurationReady,true);assert.equal(healthData.liveSupabaseVerified,false);assert.ok(!JSON.stringify(healthData).includes(workerEnv.SUPABASE_SERVICE_ROLE_KEY));assert.equal(creates.length,0);
+
  workerEnv=configured('runtime-a');let response=await login.POST(req('/api/employee/login',{identifier:'admin@example.com',password:' pass with spaces '}),{});
  assert.equal(response.status,200);let data=await response.json();assert.equal(data.role,'admin');assert.equal(data.auth_session.access_token,'admin-access');assert.equal(attempts[0].password,' pass with spaces ');assert.ok(creates.every(c=>c.url.includes('runtime-a')));
  workerEnv=configured('runtime-b');creates=[];await login.POST(req('/api/employee/login',{identifier:'admin@example.com',password:'pw'}),{});assert.ok(creates.every(c=>c.url.includes('runtime-b')));
@@ -56,7 +63,7 @@ const req=(url,body,admin=false)=>new NextRequest('https://worker.test'+url,{met
  scenario='invalid';response=await login.POST(req('/api/employee/login',{identifier:'person@example.com',password:'bad'}),{});assert.equal(response.status,401);assert.equal((await response.json()).code,'INVALID_CREDENTIALS');
  scenario='bad-key';response=await login.POST(req('/api/employee/login',{identifier:'person@example.com',password:'bad'}),{});assert.equal(response.status,503);assert.equal((await response.json()).code,'SUPABASE_AUTH_UNAVAILABLE');
  scenario='write-error';response=await login.POST(req('/api/employee/login',{identifier:'person@example.com',password:'pw',device_fingerprint:'fp'}),{});assert.equal(response.status,500);assert.ok(!(await response.json()).session_token);
- scenario='admin';assert.equal((await settings.GET(req('/api/admin/settings'),{})).status,401);
+ scenario='admin';workerEnv={...configured('runtime-a'),NEXT_PUBLIC_SUPABASE_ANON_KEY:'sb_secret_not_a_public_key'};assert.equal((await settings.GET(req('/api/admin/settings',undefined,true),{})).status,200);workerEnv=configured('runtime-a');assert.equal((await settings.GET(req('/api/admin/settings'),{})).status,401);
  response=await settings.GET(req('/api/admin/settings',undefined,true),{});assert.equal(response.status,200);assert.equal((await response.json()).settings.qr_secret,'CURRENT-QR');
  response=await settings.PUT(req('/api/admin/settings',{qr_secret:'ROTATED-QR'},true),{});assert.equal(response.status,200);assert.equal((await response.json()).settings.qr_secret,'ROTATED-QR');
  scenario='leave-block';writes=[];response=await attendance.POST(req('/api/employee/attendance',{session_token:'employee-token',device_fingerprint:'fp',qr_data:'ROTATED-QR',lat:32,lng:74,intent:'clock_in'}),{});assert.equal(response.status,409);assert.equal((await response.json()).leave_blocked,true);assert.equal(writes.length,0);

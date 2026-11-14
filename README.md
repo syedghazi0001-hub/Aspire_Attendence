@@ -1,6 +1,20 @@
-# Aspire Attendance v6.2 — Cloudflare runtime repair
+# Aspire Attendance v6.2.1 — Runtime binding retention and diagnostics
 
-Based on repository commit `200d8072bee309b87372cde0e7635b2169641d1b` from https://github.com/syedghazi0001-hub/Aspire_Attendence. This is the deployed-source update, not a new template. No live GitHub push or production database operation was performed.
+Based on repository commit `19b8a2be68b152ccaec022fa39ec9601dae7a3f5` from https://github.com/syedghazi0001-hub/Aspire_Attendence. This is the deployed-source update, not a new template. No live GitHub push or production database operation was performed.
+
+## Important finding in this repository
+
+The latest source already used request-scoped `getCloudflareContext().env`; the missing-binding error was not evidence of an active build-environment fallback. A separate deployment risk was present: Wrangler configuration did not preserve dashboard-managed non-secret variables. That can remove configured URL/public-key bindings on redeploy. This release sets top-level `keep_vars = true` and the deploy script also uses `--keep-vars`. This is a safeguard, not proof of the exact cause on the inaccessible production account.
+
+Official behavior: [1](https://developers.cloudflare.com/workers/wrangler/configuration/).
+
+**Retention cannot restore variables already absent.** Correct URL, public key and server-only service key must still exist on the actual deployed Worker. Build-only variables are not a substitute for runtime bindings. No private keys are supplied or embedded in this project.
+
+`GET /api/health` identifies this release (`6.2.1-runtime-bindings`) and reports configuration readiness without revealing keys. A 200 means the required values have acceptable configuration shape, **not** that live Supabase authentication/passwords have been tested. A 503 names missing/invalid bindings. An older release/404 indicates this specific version is not serving that URL.
+
+Server-only operations no longer reject an unrelated invalid public-key binding; login/public browser config still require a valid-shaped public key. Supabase clients are instantiated only as needed per server request. No production application source accesses build-process environment values.
+
+The existing UI, payroll rules, login/device lock, attendance and leave pages were retained unchanged. TypeScript now excludes generated Wrangler/OpenNext artifacts while retaining source and Next.js route type checks.
 
 ## Implemented
 

@@ -1,5 +1,6 @@
+BEGIN;
 -- =================================================================================
--- PULSEHR CLOUD v5.1: NON-DESTRUCTIVE SUPABASE SCHEMA & AUTH TRIGGER ARCHITECTURE
+-- ASPIRE ATTENDANCE v6.2: SINGLE MASTER SCHEMA, AUTH, LEAVES AND PAYROLL INTEGRITY
 -- Run this entire script in the Supabase SQL Editor. Safe to re-run at any time.
 -- =================================================================================
 
@@ -344,7 +345,7 @@ END;
 $$;
 
 ALTER FUNCTION public.admin_create_employee(TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TIME, TIME, UUID) OWNER TO postgres;
-GRANT EXECUTE ON FUNCTION public.admin_create_employee(TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TIME, TIME, UUID) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_create_employee(TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TIME, TIME, UUID) TO service_role;
 
 -- =================================================================================
 -- 3. TABLE: public.attendance
@@ -485,63 +486,13 @@ INSERT INTO public.settings (id, office_lat, office_lng, radius_meters, qr_secre
 VALUES (1, 32.6400, 74.1800, 100, 'LAB-DEFAULT-QR-SECRET-2026')
 ON CONFLICT (id) DO NOTHING;
 
--- =================================================================================
--- 7. ROW LEVEL SECURITY (RLS) POLICIES & PERMISSIONS
--- =================================================================================
+-- 7. RLS is enabled; final least-privilege grants appear below.
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.attendance ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.leaves ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.active_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.session_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "full_access_users" ON public.users;
-CREATE POLICY "full_access_users"
-ON public.users FOR ALL
-TO postgres, anon, authenticated, service_role, supabase_auth_admin
-USING (true)
-WITH CHECK (true);
-
-DROP POLICY IF EXISTS "full_access_attendance" ON public.attendance;
-CREATE POLICY "full_access_attendance"
-ON public.attendance FOR ALL
-TO postgres, anon, authenticated, service_role
-USING (true)
-WITH CHECK (true);
-
-DROP POLICY IF EXISTS "full_access_leaves" ON public.leaves;
-CREATE POLICY "full_access_leaves"
-ON public.leaves FOR ALL
-TO postgres, anon, authenticated, service_role
-USING (true)
-WITH CHECK (true);
-
-DROP POLICY IF EXISTS "full_access_active_sessions" ON public.active_sessions;
-CREATE POLICY "full_access_active_sessions"
-ON public.active_sessions FOR ALL
-TO postgres, anon, authenticated, service_role
-USING (true)
-WITH CHECK (true);
-
-DROP POLICY IF EXISTS "full_access_session_requests" ON public.session_requests;
-CREATE POLICY "full_access_session_requests"
-ON public.session_requests FOR ALL
-TO postgres, anon, authenticated, service_role
-USING (true)
-WITH CHECK (true);
-
-DROP POLICY IF EXISTS "full_access_settings" ON public.settings;
-CREATE POLICY "full_access_settings"
-ON public.settings FOR ALL
-TO postgres, anon, authenticated, service_role
-USING (true)
-WITH CHECK (true);
-
-GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role, supabase_auth_admin;
-GRANT ALL ON ALL TABLES IN SCHEMA public TO postgres, anon, authenticated, service_role, supabase_auth_admin;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role, supabase_auth_admin;
-
-NOTIFY pgrst, 'reload schema';
 
 -- v6 upgrade: future writes cannot create negative overtime. Existing records remain
 -- untouched; API and payroll clamp historical negative values for display/payment.
@@ -578,11 +529,9 @@ END; $$;
 DROP TRIGGER IF EXISTS guard_employee_identity ON public.users;
 CREATE TRIGGER guard_employee_identity BEFORE INSERT OR UPDATE ON public.users
 FOR EACH ROW EXECUTE FUNCTION public.guard_employee_identity();
-NOTIFY pgrst, 'reload schema';
 
--- Run once in Supabase SQL Editor BEFORE deploying the application.
+-- Expand the existing leave status constraint without deleting leave rows.
 -- Transactional, preserves records; only expands leave status validation.
-BEGIN;
 DO $$ DECLARE item record; BEGIN
   FOR item IN SELECT conname FROM pg_constraint WHERE conrelid = 'public.leaves'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%status%' LOOP
     EXECUTE format('ALTER TABLE public.leaves DROP CONSTRAINT %I', item.conname);
@@ -590,11 +539,8 @@ DO $$ DECLARE item record; BEGIN
 END $$;
 ALTER TABLE public.leaves ADD CONSTRAINT leaves_status_check CHECK (status IN ('pending','approved','rejected','cancelled')) NOT VALID;
 ALTER TABLE public.leaves VALIDATE CONSTRAINT leaves_status_check;
-COMMIT;
-NOTIFY pgrst, 'reload schema';
 
--- Upgrade after 20261110_leave_cancellation.sql. Back up database first.
-BEGIN;
+-- Final payroll integrity definitions.
 ALTER TABLE public.attendance ADD COLUMN IF NOT EXISTS overtime_override_hours NUMERIC(8,2);
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.attendance'::regclass AND conname='attendance_override_range') THEN
@@ -678,10 +624,7 @@ GRANT ALL ON public.users,public.attendance,public.leaves,public.active_sessions
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO service_role;
 REVOKE EXECUTE ON FUNCTION public.admin_create_employee(TEXT,TEXT,TEXT,TEXT,NUMERIC,NUMERIC,NUMERIC,NUMERIC,TIME,TIME,UUID) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION public.admin_create_employee(TEXT,TEXT,TEXT,TEXT,NUMERIC,NUMERIC,NUMERIC,NUMERIC,TIME,TIME,UUID) TO service_role;
-COMMIT;
-NOTIFY pgrst,'reload schema';
 
-BEGIN;
 CREATE OR REPLACE FUNCTION public.sync_short_leave_hours()
 RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
 BEGIN
@@ -691,10 +634,7 @@ BEGIN
 END; $$;
 DROP TRIGGER IF EXISTS sync_short_leave_hours ON public.leaves;
 CREATE TRIGGER sync_short_leave_hours AFTER INSERT OR UPDATE ON public.leaves FOR EACH ROW EXECUTE FUNCTION public.sync_short_leave_hours();
-COMMIT;
-
 -- Single statement / consistent PostgreSQL snapshot for payroll inputs.
-BEGIN;
 CREATE OR REPLACE FUNCTION public.get_payroll_inputs(p_month TEXT)
 RETURNS JSONB LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=public AS $$
 DECLARE start_date DATE; end_date DATE;
@@ -719,10 +659,7 @@ BEGIN
 END; $$;
 REVOKE EXECUTE ON FUNCTION public.get_payroll_inputs(TEXT) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION public.get_payroll_inputs(TEXT) TO service_role;
-COMMIT;
-NOTIFY pgrst, 'reload schema';
 
-BEGIN;
 CREATE OR REPLACE FUNCTION public.cancel_employee_leave(p_user_id UUID,p_leave_id UUID,p_token TEXT,p_fingerprint TEXT)
 RETURNS public.leaves LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
 DECLARE verified_user UUID; item public.leaves;
@@ -741,7 +678,8 @@ BEGIN
 END; $$;
 REVOKE EXECUTE ON FUNCTION public.cancel_employee_leave(UUID,UUID,TEXT,TEXT) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION public.cancel_employee_leave(UUID,UUID,TEXT,TEXT) TO service_role;
-COMMIT;
-NOTIFY pgrst,'reload schema';
 
 CREATE INDEX IF NOT EXISTS idx_payroll_change_lookup ON public.payroll_change_log(table_name,row_id,changed_at);
+
+COMMIT;
+NOTIFY pgrst, 'reload schema';

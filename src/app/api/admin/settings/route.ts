@@ -1,66 +1,25 @@
+import { createRuntimeClients, runtimeConfigurationResponse, type RuntimeEnv } from "@/lib/supabaseRuntime";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { requireAdmin } from "@/lib/requireAdmin";
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
-function createAdminClientFromCloudflare(req: NextRequest, cfEnv: Record<string, any>) {
 
-  const supabaseUrl = String(
-    cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
-      cfEnv.SUPABASE_URL ||
-      process.env.NEXT_PUBLIC_SUPABASE_URL ||
-      process.env.SUPABASE_URL ||
-      ""
-  ).trim();
 
-  const anonKey = String(
-    cfEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      cfEnv.SUPABASE_ANON_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      process.env.SUPABASE_ANON_KEY ||
-      ""
-  ).trim();
-
-  const serviceRoleKey = String(
-    cfEnv.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      ""
-  ).trim();
-
-  const activeKey = serviceRoleKey || anonKey;
-  if (!supabaseUrl || !activeKey) return null;
-
-  const authHeader = req.headers.get("authorization") || "";
-  return createClient(supabaseUrl, activeKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-    ...(!serviceRoleKey && authHeader
-      ? { global: { headers: { Authorization: authHeader } } }
-      : {}),
-  });
-}
-
-const DEFAULT_SETTINGS = {
-  id: 1,
-  office_lat: 32.64,
-  office_lng: 74.18,
-  lab_lat: 32.64,
-  lab_lng: 74.18,
-  radius_meters: 100,
-  qr_secret: "LAB-DEFAULT-QR-SECRET-2026",
-  qr_code_string: "LAB-DEFAULT-QR-SECRET-2026",
-};
 
 export async function GET(req: NextRequest, _context: any) {
-  let cfEnv: Record<string, any> = {};
+  let cfEnv: RuntimeEnv;
+  let requestClients: ReturnType<typeof createRuntimeClients>;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as Record<string, any>;
-  } catch { /* Local development uses process.env below. */ }
-  const denied = await requireAdmin(req, cfEnv);
+    cfEnv = env as RuntimeEnv;
+    requestClients = createRuntimeClients(cfEnv, false);
+  } catch (error) { return runtimeConfigurationResponse(error); }
+
+  const denied = await requireAdmin(req, requestClients.client);
   if (denied) return denied;
 
-  const client = createAdminClientFromCloudflare(req, cfEnv);
+  const client = requestClients.client;
   if (!client) {
     return NextResponse.json({ error: "Settings unavailable." }, { status: 503 });
   }
@@ -105,8 +64,8 @@ export async function GET(req: NextRequest, _context: any) {
   });
 }
 
-async function handleSaveSettings(req: NextRequest, cfEnv: Record<string, any>) {
-  const client = createAdminClientFromCloudflare(req, cfEnv);
+async function handleSaveSettings(req: NextRequest, requestClients: ReturnType<typeof createRuntimeClients>) {
+  const client = requestClients.client;
   if (!client) {
     return NextResponse.json(
       { error: "Supabase credentials missing." },
@@ -151,25 +110,31 @@ async function handleSaveSettings(req: NextRequest, cfEnv: Record<string, any>) 
 }
 
 export async function PUT(req: NextRequest, _context: any) {
-  let cfEnv: Record<string, any> = {};
+  let cfEnv: RuntimeEnv;
+  let requestClients: ReturnType<typeof createRuntimeClients>;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as Record<string, any>;
-  } catch { /* Local development uses process.env below. */ }
-  const denied = await requireAdmin(req, cfEnv);
+    cfEnv = env as RuntimeEnv;
+    requestClients = createRuntimeClients(cfEnv, false);
+  } catch (error) { return runtimeConfigurationResponse(error); }
+
+  const denied = await requireAdmin(req, requestClients.client);
   if (denied) return denied;
 
-  return handleSaveSettings(req, cfEnv);
+  return handleSaveSettings(req, requestClients);
 }
 
 export async function POST(req: NextRequest, _context: any) {
-  let cfEnv: Record<string, any> = {};
+  let cfEnv: RuntimeEnv;
+  let requestClients: ReturnType<typeof createRuntimeClients>;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as Record<string, any>;
-  } catch { /* Local development uses process.env below. */ }
-  const denied = await requireAdmin(req, cfEnv);
+    cfEnv = env as RuntimeEnv;
+    requestClients = createRuntimeClients(cfEnv, false);
+  } catch (error) { return runtimeConfigurationResponse(error); }
+
+  const denied = await requireAdmin(req, requestClients.client);
   if (denied) return denied;
 
-  return handleSaveSettings(req, cfEnv);
+  return handleSaveSettings(req, requestClients);
 }

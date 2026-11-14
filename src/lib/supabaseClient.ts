@@ -1,28 +1,19 @@
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+"use client";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const rawAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-
-export const isSupabaseConfigured = Boolean(
-  rawUrl &&
-    rawAnonKey &&
-    !rawUrl.includes("your-project-id.supabase.co") &&
-    !rawAnonKey.includes("your-anon-public-key-here")
-);
-
-// Use safe fallback values only so build/prerender doesn't crash before .env.local is added
-const safeUrl = isSupabaseConfigured
-  ? rawUrl
-  : "https://placeholder-project.supabase.co";
-const safeAnonKey = isSupabaseConfigured
-  ? rawAnonKey
-  : "placeholder-anon-key";
-
-export const supabase: SupabaseClient = createClient(safeUrl, safeAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-    storageKey: "lab-attendance-persistent-auth",
-  },
-});
+let clientPromise: Promise<SupabaseClient> | undefined;
+/** Browser-only singleton, initialized from safe runtime configuration, not build-time env. */
+export function getBrowserSupabase(): Promise<SupabaseClient> {
+  if (typeof window === "undefined") return Promise.reject(new Error("Browser auth is not available during server rendering."));
+  if (!clientPromise) {
+    clientPromise = (async () => {
+      const response = await fetch("/api/public-config", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok || !data.url || !data.anonKey) throw new Error(data.error || "Supabase public runtime configuration is unavailable.");
+      return createClient(data.url, data.anonKey, {
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: "lab-attendance-persistent-auth" },
+      });
+    })().catch(error => { clientPromise = undefined; throw error; });
+  }
+  return clientPromise;
+}

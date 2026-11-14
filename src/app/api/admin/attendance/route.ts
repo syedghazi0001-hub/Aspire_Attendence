@@ -1,56 +1,25 @@
+import { createRuntimeClients, runtimeConfigurationResponse, type RuntimeEnv } from "@/lib/supabaseRuntime";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { selectAll } from "@/lib/selectAll";
 import { requireAdmin } from "@/lib/requireAdmin";
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
-function createAdminClientFromCloudflare(req: NextRequest, cfEnv: Record<string, any>) {
 
-  const supabaseUrl = String(
-    cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
-      cfEnv.SUPABASE_URL ||
-      process.env.NEXT_PUBLIC_SUPABASE_URL ||
-      process.env.SUPABASE_URL ||
-      ""
-  ).trim();
-
-  const anonKey = String(
-    cfEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      cfEnv.SUPABASE_ANON_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      process.env.SUPABASE_ANON_KEY ||
-      ""
-  ).trim();
-
-  const serviceRoleKey = String(
-    cfEnv.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      ""
-  ).trim();
-
-  const activeKey = serviceRoleKey || anonKey;
-  if (!supabaseUrl || !activeKey) return null;
-
-  const authHeader = req.headers.get("authorization") || "";
-  return createClient(supabaseUrl, activeKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-    ...(!serviceRoleKey && authHeader
-      ? { global: { headers: { Authorization: authHeader } } }
-      : {}),
-  });
-}
 
 export async function GET(req: NextRequest, _context: any) {
-  let cfEnv: Record<string, any> = {};
+  let cfEnv: RuntimeEnv;
+  let requestClients: ReturnType<typeof createRuntimeClients>;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as Record<string, any>;
-  } catch { /* Local development uses process.env below. */ }
-  const denied = await requireAdmin(req, cfEnv);
+    cfEnv = env as RuntimeEnv;
+    requestClients = createRuntimeClients(cfEnv, false);
+  } catch (error) { return runtimeConfigurationResponse(error); }
+
+  const denied = await requireAdmin(req, requestClients.client);
   if (denied) return denied;
 
-  const client = createAdminClientFromCloudflare(req, cfEnv);
+  const client = requestClients.client;
   if (!client) {
     return NextResponse.json({ attendance: [], records: [] });
   }
@@ -147,15 +116,18 @@ export async function GET(req: NextRequest, _context: any) {
  * Input: { user_id: string, date: string, overtime_hours: number, mode?: 'set' | 'add' }
  */
 export async function POST(req: NextRequest, _context: any) {
-  let cfEnv: Record<string, any> = {};
+  let cfEnv: RuntimeEnv;
+  let requestClients: ReturnType<typeof createRuntimeClients>;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as Record<string, any>;
-  } catch { /* Local development uses process.env below. */ }
-  const denied = await requireAdmin(req, cfEnv);
+    cfEnv = env as RuntimeEnv;
+    requestClients = createRuntimeClients(cfEnv, false);
+  } catch (error) { return runtimeConfigurationResponse(error); }
+
+  const denied = await requireAdmin(req, requestClients.client);
   if (denied) return denied;
 
-  const client = createAdminClientFromCloudflare(req, cfEnv);
+  const client = requestClients.client;
   if (!client) {
     return NextResponse.json(
       { error: "Supabase is not configured." },
@@ -275,12 +247,15 @@ export async function POST(req: NextRequest, _context: any) {
 }
 
 export async function PUT(req: NextRequest, context: any) {
-  let cfEnv: Record<string, any> = {};
+  let cfEnv: RuntimeEnv;
+  let requestClients: ReturnType<typeof createRuntimeClients>;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as Record<string, any>;
-  } catch { /* Local development uses process.env below. */ }
-  const denied = await requireAdmin(req, cfEnv);
+    cfEnv = env as RuntimeEnv;
+    requestClients = createRuntimeClients(cfEnv, false);
+  } catch (error) { return runtimeConfigurationResponse(error); }
+
+  const denied = await requireAdmin(req, requestClients.client);
   if (denied) return denied;
 
   return POST(req, context);

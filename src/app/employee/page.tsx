@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { getAveragedGps } from "@/lib/accurateGps";
 import QrScannerModal from "@/components/QrScannerModal";
 import ThemeToggle from "@/components/ThemeToggle";
-import { supabase } from "@/lib/supabaseClient";
+import { getBrowserSupabase } from "@/lib/supabaseClient";
 import { generateDeviceFingerprint } from "@/lib/fingerprint";
 import { formatPktTime12h, formatTime24to12 } from "@/lib/pktTime";
 import {
@@ -108,7 +108,8 @@ export default function EmployeePortalPage() {
   const clearLocalSessionAndRedirect = useCallback(async () => {
     localStorage.removeItem(SESSION_TOKEN_KEY);
     localStorage.removeItem(EMPLOYEE_PROFILE_KEY);
-    await supabase.auth.signOut().catch(() => null);
+    // Employee custom-session cleanup must still succeed if public config is unavailable.
+    await getBrowserSupabase().then(client => client.auth.signOut()).catch(() => null);
     router.replace("/");
   }, [router]);
 

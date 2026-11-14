@@ -1,7 +1,7 @@
+import { createRuntimeClients, runtimeConfigurationResponse, type RuntimeEnv } from "@/lib/supabaseRuntime";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { requireAdmin } from "@/lib/requireAdmin";
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import {
   employeeIdToAuthEmail,
@@ -11,82 +11,23 @@ import {
 } from "@/lib/geo";
 import { calculateShiftDurationHours } from "@/lib/pktTime";
 
-function createPerRequestSupabaseAdmin(req: NextRequest, cfEnv: Record<string, any>) {
 
-  const supabaseUrl = String(
-    cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
-      cfEnv.SUPABASE_URL ||
-      process.env.NEXT_PUBLIC_SUPABASE_URL ||
-      process.env.SUPABASE_URL ||
-      ""
-  ).trim();
-
-  const anonKey = String(
-    cfEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      cfEnv.SUPABASE_ANON_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      process.env.SUPABASE_ANON_KEY ||
-      ""
-  ).trim();
-
-  const serviceRoleKey = String(
-    cfEnv.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      ""
-  ).trim();
-
-  const hasServiceRole = Boolean(
-    serviceRoleKey &&
-      !serviceRoleKey.includes("your-service-role-secret-key-here") &&
-      serviceRoleKey !== anonKey
-  );
-
-  const activeKey = hasServiceRole ? serviceRoleKey : anonKey;
-  if (!supabaseUrl || !activeKey) {
-    return {
-      supabaseAdmin: null,
-      anonClient: null,
-      hasServiceRole: false,
-    };
-  }
-
-  const authHeader = req.headers.get("authorization") || "";
-
-  const supabaseAdmin = createClient(supabaseUrl, activeKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-    ...(!hasServiceRole && authHeader
-      ? { global: { headers: { Authorization: authHeader } } }
-      : {}),
-  });
-
-  const anonClient = createClient(supabaseUrl, anonKey || activeKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-  });
-
-  return {
-    supabaseAdmin,
-    anonClient,
-    hasServiceRole,
-  };
-}
 
 export async function GET(req: NextRequest, _context: any) {
-  let cfEnv: Record<string, any> = {};
+  let cfEnv: RuntimeEnv;
+  let requestClients: ReturnType<typeof createRuntimeClients>;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as Record<string, any>;
-  } catch { /* Local development uses process.env below. */ }
-  const denied = await requireAdmin(req, cfEnv);
+    cfEnv = env as RuntimeEnv;
+    requestClients = createRuntimeClients(cfEnv, false);
+  } catch (error) { return runtimeConfigurationResponse(error); }
+
+  const denied = await requireAdmin(req, requestClients.client);
   if (denied) return denied;
 
   try {
-    const { supabaseAdmin } = createPerRequestSupabaseAdmin(req, cfEnv);
+    const { client: supabaseAdmin, anonClient } = requestClients;
+    const hasServiceRole = true;
     if (!supabaseAdmin) {
       return NextResponse.json(
         {
@@ -136,18 +77,21 @@ export async function GET(req: NextRequest, _context: any) {
 }
 
 export async function POST(req: NextRequest, _context: any) {
-  let cfEnv: Record<string, any> = {};
+  let cfEnv: RuntimeEnv;
+  let requestClients: ReturnType<typeof createRuntimeClients>;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as Record<string, any>;
-  } catch { /* Local development uses process.env below. */ }
-  const denied = await requireAdmin(req, cfEnv);
+    cfEnv = env as RuntimeEnv;
+    requestClients = createRuntimeClients(cfEnv, false);
+  } catch (error) { return runtimeConfigurationResponse(error); }
+
+  const denied = await requireAdmin(req, requestClients.client);
   if (denied) return denied;
 
   try {
     // 1. Get Cloudflare Worker environment via getCloudflareContext() & create per-request client
-    const { supabaseAdmin, anonClient, hasServiceRole } =
-      createPerRequestSupabaseAdmin(req, cfEnv);
+    const { client: supabaseAdmin, anonClient } = requestClients;
+    const hasServiceRole = true;
 
     if (!supabaseAdmin || !anonClient) {
       return NextResponse.json(
@@ -450,16 +394,20 @@ export async function POST(req: NextRequest, _context: any) {
 }
 
 export async function PUT(req: NextRequest, _context: any) {
-  let cfEnv: Record<string, any> = {};
+  let cfEnv: RuntimeEnv;
+  let requestClients: ReturnType<typeof createRuntimeClients>;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as Record<string, any>;
-  } catch { /* Local development uses process.env below. */ }
-  const denied = await requireAdmin(req, cfEnv);
+    cfEnv = env as RuntimeEnv;
+    requestClients = createRuntimeClients(cfEnv, false);
+  } catch (error) { return runtimeConfigurationResponse(error); }
+
+  const denied = await requireAdmin(req, requestClients.client);
   if (denied) return denied;
 
   try {
-    const { supabaseAdmin, hasServiceRole } = createPerRequestSupabaseAdmin(req, cfEnv);
+    const { client: supabaseAdmin, anonClient } = requestClients;
+    const hasServiceRole = true;
     if (!supabaseAdmin) {
       return NextResponse.json(
         { error: "Supabase credentials missing." },
@@ -616,16 +564,20 @@ export async function PUT(req: NextRequest, _context: any) {
 }
 
 export async function DELETE(req: NextRequest, _context: any) {
-  let cfEnv: Record<string, any> = {};
+  let cfEnv: RuntimeEnv;
+  let requestClients: ReturnType<typeof createRuntimeClients>;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as Record<string, any>;
-  } catch { /* Local development uses process.env below. */ }
-  const denied = await requireAdmin(req, cfEnv);
+    cfEnv = env as RuntimeEnv;
+    requestClients = createRuntimeClients(cfEnv, false);
+  } catch (error) { return runtimeConfigurationResponse(error); }
+
+  const denied = await requireAdmin(req, requestClients.client);
   if (denied) return denied;
 
   try {
-    const { supabaseAdmin, hasServiceRole } = createPerRequestSupabaseAdmin(req, cfEnv);
+    const { client: supabaseAdmin, anonClient } = requestClients;
+    const hasServiceRole = true;
     if (!supabaseAdmin) {
       return NextResponse.json(
         { error: "Supabase credentials missing." },

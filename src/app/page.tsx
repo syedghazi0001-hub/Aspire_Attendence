@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { supabase, isSupabaseConfigured } from "@/lib/supabaseClient";
+import { getBrowserSupabase } from "@/lib/supabaseClient";
 import { generateDeviceFingerprint } from "@/lib/fingerprint";
 import ThemeToggle from "@/components/ThemeToggle";
 import {
@@ -42,7 +42,7 @@ export default function UnifiedLoginPage() {
     setPendingApprovalMsg("");
 
     const trimmedId = identifier.trim();
-    const trimmedPassword = password.trim();
+    const trimmedPassword = password;
 
     if (!trimmedId || !trimmedPassword) {
       setErrorMsg("Please enter your ID / Email and Password.");
@@ -55,29 +55,7 @@ export default function UnifiedLoginPage() {
         await generateDeviceFingerprint();
       localStorage.setItem(EMPLOYEE_FP_KEY, currentFp);
 
-      // 1. If Email input, check Admin login first
-      if (trimmedId.includes("@") && isSupabaseConfigured) {
-        const { data: directAuth, error: directErr } =
-          await supabase.auth.signInWithPassword({
-            email: trimmedId.toLowerCase(),
-            password: trimmedPassword,
-          });
-
-        if (!directErr && directAuth?.user) {
-          const { data: userRow } = await supabase
-            .from("users")
-            .select("role")
-            .eq("id", directAuth.user.id)
-            .maybeSingle();
-
-          if (userRow?.role === "admin") {
-            router.push("/admin");
-            return;
-          }
-        }
-      }
-
-      // 2. Call Unified Login API (/api/employee/login)
+      // The server authenticates all identifiers against the Worker runtime project.
       const res = await fetch("/api/employee/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -118,12 +96,10 @@ export default function UnifiedLoginPage() {
       }
 
       if (data.role === "admin") {
-        if (isSupabaseConfigured && trimmedId.includes("@")) {
-          await supabase.auth.signInWithPassword({
-            email: trimmedId.toLowerCase(),
-            password: trimmedPassword,
-          });
-        }
+        if (!data.auth_session?.access_token || !data.auth_session?.refresh_token) throw new Error("Admin login did not return an authenticated session.");
+        const supabase = await getBrowserSupabase();
+        const { error: sessionError } = await supabase.auth.setSession(data.auth_session);
+        if (sessionError) throw new Error("Unable to persist Admin session. Please sign in again.");
         router.push("/admin");
         return;
       }

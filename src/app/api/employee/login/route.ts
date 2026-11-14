@@ -1,50 +1,16 @@
+import { createRuntimeClients, runtimeConfigurationResponse, type RuntimeEnv } from "@/lib/supabaseRuntime";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { employeeIdToAuthEmail, normalizeEmployeeIdFormat } from "@/lib/geo";
 import { getPktTimeInfo } from "@/lib/pktTime";
 
-function createClientsFromCloudflare(cfEnv: Record<string, any>) {
 
-  const supabaseUrl = String(
-    cfEnv.NEXT_PUBLIC_SUPABASE_URL ||
-      cfEnv.SUPABASE_URL ||
-      process.env.NEXT_PUBLIC_SUPABASE_URL ||
-      process.env.SUPABASE_URL ||
-      ""
-  ).trim();
 
-  const anonKey = String(
-    cfEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      cfEnv.SUPABASE_ANON_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      process.env.SUPABASE_ANON_KEY ||
-      ""
-  ).trim();
-
-  const serviceRoleKey = String(
-    cfEnv.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      ""
-  ).trim();
-
-  const activeKey = serviceRoleKey || anonKey;
-  if (!supabaseUrl || !activeKey) {
-    return { client: null, anonClient: null };
-  }
-
-  const client = createClient(supabaseUrl, activeKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-
-  const anonClient = createClient(supabaseUrl, anonKey || activeKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-
-  return { client, anonClient };
+async function checked(operation: PromiseLike<{ error: { message: string } | null }>) {
+  const { error } = await operation;
+  if (error) throw new Error(`Login session could not be saved: ${error.message}`);
 }
-
 function generateSessionToken(): string {
   const bytes = new Uint8Array(24);
   if (
@@ -102,14 +68,17 @@ function formatCleanDeviceInfo(rawInfo: string, userAgent: string): string {
 }
 
 export async function POST(req: NextRequest, _context: any) {
-  let cfEnv: Record<string, any> = {};
+  let cfEnv: RuntimeEnv;
+  let requestClients: ReturnType<typeof createRuntimeClients>;
   try {
     const { env } = getCloudflareContext();
-    cfEnv = env as Record<string, any>;
-  } catch { /* Local development uses process.env below. */ }
+    cfEnv = env as RuntimeEnv;
+    requestClients = createRuntimeClients(cfEnv, true);
+  } catch (error) { return runtimeConfigurationResponse(error); }
+
 
   try {
-    const { client, anonClient } = createClientsFromCloudflare(cfEnv);
+    const { client, anonClient } = requestClients;
     if (!client || !anonClient) {
       return NextResponse.json(
         {
@@ -121,8 +90,8 @@ export async function POST(req: NextRequest, _context: any) {
     }
 
     const body = await req.json();
-    const rawIdentifier = (body.identifier || body.employee_id || "").trim();
-    const password = (body.password || "").trim();
+    const rawIdentifier = String(body.identifier || body.employee_id || "").trim();
+    const password = typeof body.password === "string" ? body.password : "";
     const deviceFingerprint = (
       body.device_fingerprint ||
       body.device_id ||
@@ -148,60 +117,38 @@ export async function POST(req: NextRequest, _context: any) {
     if (isEmailInput) {
       candidateEmails.push(rawIdentifier.toLowerCase());
     } else {
-      candidateEmails.push(employeeIdToAuthEmail(canonicalEmpId));
-      const rawEmail = employeeIdToAuthEmail(rawUpperEmpId);
-      if (!candidateEmails.includes(rawEmail)) {
-        candidateEmails.push(rawEmail);
+      // Profiles may retain a legacy Auth email. Resolve only via the same employee's Auth UUID.
+      const { data: assignedProfile, error: lookupError } = await client.from("users").select("id").in("employee_id", [canonicalEmpId, rawUpperEmpId]).limit(1).maybeSingle();
+      if (lookupError) return NextResponse.json({ error: "Supabase profile lookup failed. Verify the Worker service key and database availability.", code: "SUPABASE_PROFILE_LOOKUP_FAILED" }, { status: 503 });
+      if (assignedProfile) {
+        const { data: assignedAuth, error: authLookupError } = await client.auth.admin.getUserById(assignedProfile.id);
+        if (authLookupError) return NextResponse.json({ error: "Employee Auth record is unavailable. Contact Admin.", code: "AUTH_RECORD_UNAVAILABLE" }, { status: 503 });
+        if (assignedAuth.user?.email) candidateEmails.push(assignedAuth.user.email);
       }
+      candidateEmails.push(employeeIdToAuthEmail(canonicalEmpId), employeeIdToAuthEmail(rawUpperEmpId));
     }
-
     let authUser: any = null;
-    for (const emailCandidate of candidateEmails) {
-      const { data: authData, error: authErr } =
-        await anonClient.auth.signInWithPassword({
-          email: emailCandidate,
-          password,
-        });
-      if (!authErr && authData?.user) {
+    let authenticatedSession: { access_token: string; refresh_token: string } | null = null;
+    for (const emailCandidate of [...new Set(candidateEmails)]) {
+      const { data: authData, error: authErr } = await anonClient.auth.signInWithPassword({ email: emailCandidate, password });
+      if (!authErr && authData?.user && authData.session) {
         authUser = authData.user;
+        authenticatedSession = { access_token: authData.session.access_token, refresh_token: authData.session.refresh_token };
         break;
       }
+      if (authErr) {
+        if (authErr.status === 429) return NextResponse.json({ error: "Too many login attempts. Please wait before trying again.", code: "AUTH_RATE_LIMITED" }, { status: 429 });
+        if (authErr.code === "email_not_confirmed") return NextResponse.json({ error: "Account email is not confirmed. Contact Admin.", code: "EMAIL_NOT_CONFIRMED" }, { status: 403 });
+        const invalidPassword = authErr.code === "invalid_credentials" || /invalid login credentials/i.test(authErr.message);
+        if (!invalidPassword) return NextResponse.json({ error: "Supabase authentication is unavailable or the configured public key was rejected.", code: "SUPABASE_AUTH_UNAVAILABLE" }, { status: 503 });
+      }
     }
-
-    if (!authUser) {
-      return NextResponse.json(
-        {
-          error: "Invalid credentials. Please check your ID/Email and Password.",
-        },
-        { status: 401 }
-      );
-    }
-
-    let { data: userRecord } = await client
-      .from("users")
-      .select("*")
-      .eq("id", authUser.id)
-      .maybeSingle();
-
-    if (!userRecord && !isEmailInput) {
-      const { data: byEmpId } = await client
-        .from("users")
-        .select("*")
-        .or(
-          `employee_id.ilike.${canonicalEmpId},employee_id.ilike.${rawUpperEmpId}`
-        )
-        .limit(1)
-        .maybeSingle();
-      userRecord = byEmpId;
-    }
-
-    if (!userRecord) return NextResponse.json({ error: "User profile missing. Contact Admin." }, { status: 403 });
-    if (userRecord.role === "admin") {
-      return NextResponse.json({
-        role: "admin",
-        message: "Admin login successful.",
-      });
-    }
+    if (!authUser) return NextResponse.json({ error: "Invalid credentials. Please check your ID/Email and Password.", code: "INVALID_CREDENTIALS" }, { status: 401 });
+    const { data: userRecord, error: profileError } = await client.from("users").select("*").eq("id", authUser.id).maybeSingle();
+    if (profileError) return NextResponse.json({ error: "Authenticated, but the profile could not be loaded. Verify service key/database access.", code: "PROFILE_UNAVAILABLE" }, { status: 503 });
+    if (!userRecord) return NextResponse.json({ error: "User profile missing. Contact Admin.", code: "PROFILE_MISSING" }, { status: 403 });
+    if (userRecord.role === "admin") return NextResponse.json({ role: "admin", auth_session: authenticatedSession, message: "Admin login successful." }, { headers: { "Cache-Control": "no-store" } });
+    if (userRecord.role !== "employee") return NextResponse.json({ error: "Account role is not enabled." }, { status: 403 });
 
     if (!deviceFingerprint) {
       return NextResponse.json(
@@ -212,13 +159,14 @@ export async function POST(req: NextRequest, _context: any) {
 
     const pktNow = getPktTimeInfo(new Date());
 
-    const { data: userSessions } = await client
+    const { data: userSessions, error: sessionsError } = await client
       .from("active_sessions")
       .select("*")
       .eq("user_id", userRecord.id)
       .eq("is_active", true)
       .order("created_at", { ascending: false });
 
+    if (sessionsError) throw new Error("Unable to verify existing device sessions. Login was not granted.");
     const activeSessionsList = userSessions || [];
 
     const existingApprovedSameDevice = activeSessionsList.find(
@@ -229,14 +177,14 @@ export async function POST(req: NextRequest, _context: any) {
     );
 
     if (existingApprovedSameDevice) {
-      await client
+      await checked(client
         .from("active_sessions")
         .update({
           last_seen: pktNow.isoPkt,
           device_info: cleanDeviceInfo,
           is_active: true,
         })
-        .eq("id", existingApprovedSameDevice.id);
+        .eq("id", existingApprovedSameDevice.id));
 
       return NextResponse.json({
         role: "employee",
@@ -273,16 +221,16 @@ export async function POST(req: NextRequest, _context: any) {
         existingPendingSession?.session_token || generateSessionToken();
 
       if (existingPendingSession) {
-        await client
+        await checked(client
           .from("active_sessions")
           .update({
             device_info: cleanDeviceInfo,
             last_seen: pktNow.isoPkt,
             is_active: true,
           })
-          .eq("id", existingPendingSession.id);
+          .eq("id", existingPendingSession.id));
       } else {
-        await client.from("active_sessions").insert({
+        await checked(client.from("active_sessions").insert({
           user_id: userRecord.id,
           device_fingerprint: deviceFingerprint,
           device_info: cleanDeviceInfo,
@@ -291,7 +239,7 @@ export async function POST(req: NextRequest, _context: any) {
           approval_status: "pending_login",
           created_at: pktNow.isoPkt,
           last_seen: pktNow.isoPkt,
-        });
+        }));
       }
 
       const { data: existingPendingReq } = await client
@@ -303,23 +251,23 @@ export async function POST(req: NextRequest, _context: any) {
         .maybeSingle();
 
       if (existingPendingReq) {
-        await client
+        await checked(client
           .from("session_requests")
           .update({
             device_id: deviceFingerprint,
             device_info: cleanDeviceInfo,
             created_at: pktNow.isoPkt,
           })
-          .eq("id", existingPendingReq.id);
+          .eq("id", existingPendingReq.id));
       } else {
-        await client.from("session_requests").insert({
+        await checked(client.from("session_requests").insert({
           user_id: userRecord.id,
           request_type: "login",
           device_id: deviceFingerprint,
           device_info: cleanDeviceInfo,
           status: "pending",
           created_at: pktNow.isoPkt,
-        });
+        }));
       }
 
       return NextResponse.json(
@@ -340,7 +288,7 @@ export async function POST(req: NextRequest, _context: any) {
 
     const newSessionToken = generateSessionToken();
 
-    await client.from("active_sessions").insert({
+    await checked(client.from("active_sessions").insert({
       user_id: userRecord.id,
       device_fingerprint: deviceFingerprint,
       device_info: cleanDeviceInfo,
@@ -349,12 +297,12 @@ export async function POST(req: NextRequest, _context: any) {
       approval_status: "approved",
       created_at: pktNow.isoPkt,
       last_seen: pktNow.isoPkt,
-    });
+    }));
 
-    await client
+    await checked(client
       .from("users")
       .update({ device_id: deviceFingerprint })
-      .eq("id", userRecord.id);
+      .eq("id", userRecord.id));
 
     return NextResponse.json({
       role: "employee",

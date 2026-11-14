@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { supabase, isSupabaseConfigured } from "@/lib/supabaseClient";
+import { getBrowserSupabase } from "@/lib/supabaseClient";
 import ThemeToggle from "@/components/ThemeToggle";
 import {
   LayoutDashboard,
@@ -32,15 +32,13 @@ export default function AdminShell({
   const pathname = usePathname();
   const router = useRouter();
   const [adminEmail, setAdminEmail] = useState<string>("Admin");
+  const [authError, setAuthError] = useState("");
   const [checkingAuth, setCheckingAuth] = useState<boolean>(true);
 
   useEffect(() => {
     const checkSession = async () => {
-      if (!isSupabaseConfigured) {
-        setCheckingAuth(false);
-        return;
-      }
-
+      try {
+      const supabase = await getBrowserSupabase();
       const {
         data: { session },
       } = await supabase.auth.getSession();
@@ -52,12 +50,14 @@ export default function AdminShell({
 
       setAdminEmail(session.user.email || "Administrator");
       setCheckingAuth(false);
+      } catch(error) { setAuthError(error instanceof Error ? error.message : "Runtime configuration unavailable."); }
     };
 
     checkSession();
   }, [router]);
 
   const handleLogout = async () => {
+    const supabase = await getBrowserSupabase();
     await supabase.auth.signOut();
     router.replace("/");
   };
@@ -90,6 +90,8 @@ export default function AdminShell({
       icon: Settings,
     },
   ];
+
+  if (authError) return <main className="min-h-screen flex flex-col gap-4 items-center justify-center p-6"><p role="alert">{authError}</p><button onClick={() => window.location.reload()} className="btn-3d-primary rounded-2xl px-5 py-3">Retry</button><Link href="/">Back to Sign In</Link></main>;
 
   if (checkingAuth) {
     return (
@@ -200,30 +202,7 @@ export default function AdminShell({
 
       {/* Main Content Area with Framer Motion 3D Slide-Up */}
       <div className="relative z-10 flex-1 flex flex-col min-w-0">
-        {!isSupabaseConfigured && (
-          <div className="mx-4 mt-4 rounded-2xl glass-panel px-4 py-3 text-xs text-amber-900 dark:text-amber-200 flex items-center gap-2.5">
-            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
-            <span>
-              <strong>Supabase Configuration Notice:</strong> Set{" "}
-              <code className="font-mono bg-white/50 dark:bg-slate-800/60 px-1.5 py-0.5 rounded">
-                NEXT_PUBLIC_SUPABASE_URL
-              </code>
-              ,{" "}
-              <code className="font-mono bg-white/50 dark:bg-slate-800/60 px-1.5 py-0.5 rounded">
-                NEXT_PUBLIC_SUPABASE_ANON_KEY
-              </code>
-              , and{" "}
-              <code className="font-mono bg-white/50 dark:bg-slate-800/60 px-1.5 py-0.5 rounded">
-                SUPABASE_SERVICE_ROLE_KEY
-              </code>{" "}
-              in{" "}
-              <code className="font-mono bg-white/50 dark:bg-slate-800/60 px-1.5 py-0.5 rounded">
-                .env.local
-              </code>{" "}
-              or Cloudflare Worker Variables.
-            </span>
-          </div>
-        )}
+
 
         {(title || subtitle) && (
           <header className="px-4 sm:px-6 lg:px-8 pt-4 sm:pt-6">
